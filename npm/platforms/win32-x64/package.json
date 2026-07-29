@@ -1,0 +1,23 @@
+{
+  "name": "@lqw905/ebo-win32-x64",
+  "version": "0.1.0",
+  "description": "Windows x64 native binary for Ebo.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lqw905/Ebo.git"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/ebo.exe",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

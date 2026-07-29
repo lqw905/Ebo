@@ -1,0 +1,123 @@
+# Ebo
+
+Ebo is a local CLI runtime for managing a project Prompt Tree. It does not call AI APIs, does not generate prompts, and does not execute code changes by itself. Humans or external agents create Prompt Markdown; Ebo stages, reviews, approves, applies, validates, and scans the tree.
+
+This repository currently contains the first MVP slice.
+
+## Build
+
+```bash
+go test ./...
+go build -o ebo ./cmd/ebo
+```
+
+## CI
+
+GitHub Actions runs on Windows, macOS, and Linux:
+
+```text
+go test ./...
+go build ./cmd/ebo
+go test ./internal/cli -run TestCLISmoke -count=1
+node scripts/check-npm-packages.mjs
+npm pack --dry-run ./npm/root
+```
+
+The npm CI job also runs a packaging smoke test with fake binaries to verify the platform package layout.
+
+## Implemented Commands
+
+```bash
+ebo init --agents codex,claude
+ebo doctor
+ebo status
+ebo config get
+
+ebo add --stdin
+ebo add --file <path>
+ebo add --dir <path>
+ebo add --dry-run --file <path>
+ebo review [proposal-id]
+ebo approve <proposal-id>
+ebo reject <proposal-id> --reason "..."
+ebo apply <proposal-id>
+
+ebo tree list
+ebo tree show <node-id>
+ebo tree validate
+ebo tree search "<text>"
+ebo tree graph [node-id]
+ebo tree graph --around <node-id>
+ebo context <node-id> --depth 2 --out .ebo/runtime/context.json
+
+ebo scan [node-id]
+ebo plan [node-id]
+ebo plan list
+ebo plan show <plan-id>
+ebo next [plan-id]
+ebo export <plan-id> --format markdown
+ebo export <plan-id> --format json
+ebo report <task-id> --plan <plan-id> --result passed --note "..."
+ebo verify <plan-id>
+ebo abort <plan-id>
+ebo commit <plan-id> --dry-run
+ebo import . --out .ebo/runtime/import
+ebo lock status
+```
+
+`approve` intentionally requires an interactive terminal and asks the user to type the exact proposal hash. This keeps the human approval boundary explicit.
+
+## Current Scope
+
+- `.ebo/` project layout and root prompt initialization.
+- Managed Ebo blocks in `AGENTS.md` and `CLAUDE.md`.
+- Markdown Prompt parsing with YAML Front Matter subset support.
+- Proposal creation from stdin, file, or directory.
+- Hash-bound interactive approval.
+- Apply via a validated temporary candidate tree.
+- Single-root tree validation, parent checks, link target checks, and `depends_on` cycle checks.
+- Stable content and effective hashes.
+- Deterministic dirty-node scan.
+- Persistent execution plans under `.ebo/plans/`.
+- Plan-based `next`, `export`, `report`, `verify`, and `abort`.
+- `report passed|failed|blocked` writes execution state back to `.ebo/tree/` when the plan hashes still match.
+- Project-level lock file at `.ebo/locks/project.lock` for mutating commands.
+- Conservative `commit` orchestration for completed plans.
+- Basic evidence package export for reverse import workflows.
+- npm root launcher and platform package skeletons under `npm/`.
+
+## Not Complete Yet
+
+- Full Cobra-based command layer.
+- Full YAML 1.2 parser integration and JSON Schema validation.
+- Automatic staging of implementation code for one plan per commit.
+- npm Trusted Publishing must be configured on npm before the release workflow can publish packages.
+
+## Release
+
+Tagging `vX.Y.Z` triggers `.github/workflows/release.yml`.
+
+The release workflow:
+
+```text
+go test ./...
+build win/linux/darwin amd64/arm64 binaries
+write dist/checksums.txt
+node scripts/prepare-npm-packages.mjs X.Y.Z dist
+npm pack --dry-run for every package
+npm publish platform packages first
+npm publish @lqw905/ebo last
+create GitHub Release with binaries and checksums
+```
+
+## Prompt Boundary
+
+Ebo accepts prompt content only through explicit commands:
+
+```bash
+ebo add --stdin
+ebo add --file drafts/feature.md
+ebo add --dir drafts/prompts
+```
+
+Those commands create proposals only. They never write directly to `.ebo/tree/`.

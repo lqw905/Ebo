@@ -1,0 +1,27 @@
+{
+  "name": "@lqw905/ebo",
+  "version": "0.1.0",
+  "description": "Local CLI runtime for managing an Ebo Prompt Tree.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lqw905/Ebo.git"
+  },
+  "bin": {
+    "ebo": "bin/ebo.js"
+  },
+  "files": [
+    "bin/ebo.js",
+    "README.md"
+  ],
+  "optionalDependencies": {
+    "@lqw905/ebo-win32-x64": "0.1.0",
+    "@lqw905/ebo-linux-x64": "0.1.0",
+    "@lqw905/ebo-linux-arm64": "0.1.0",
+    "@lqw905/ebo-darwin-x64": "0.1.0",
+    "@lqw905/ebo-darwin-arm64": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

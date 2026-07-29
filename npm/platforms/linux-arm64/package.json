@@ -1,0 +1,23 @@
+{
+  "name": "@lqw905/ebo-linux-arm64",
+  "version": "0.1.0",
+  "description": "Linux arm64 native binary for Ebo.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lqw905/Ebo.git"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/ebo",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

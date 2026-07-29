@@ -1,0 +1,1717 @@
+package cli
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/lqw905/Ebo/internal/agentdocs"
+	"github.com/lqw905/Ebo/internal/document"
+	"github.com/lqw905/Ebo/internal/gitx"
+	"github.com/lqw905/Ebo/internal/lockfile"
+	"github.com/lqw905/Ebo/internal/planner"
+	"github.com/lqw905/Ebo/internal/project"
+	"github.com/lqw905/Ebo/internal/proposal"
+	"github.com/lqw905/Ebo/internal/tree"
+)
+
+var (
+	Version = "dev"
+	Commit  = "none"
+	BuiltAt = "unknown"
+)
+
+func Execute(args []string, in io.Reader, out, errOut io.Writer) int {
+	if len(args) == 0 {
+		printHelp(out)
+		return 0
+	}
+	var err error
+	switch args[0] {
+	case "version", "--version", "-v":
+		fmt.Fprintf(out, "ebo %s commit=%s built=%s\n", Version, Commit, BuiltAt)
+	case "help", "--help", "-h":
+		printHelp(out)
+	case "init":
+		err = runInit(args[1:], out, errOut)
+	case "doctor":
+		err = runDoctor(args[1:], out)
+	case "lock":
+		err = runLock(args[1:], out)
+	case "config":
+		err = runConfig(args[1:], out)
+	case "add":
+		err = runAdd(args[1:], in, out, errOut)
+	case "review":
+		err = runReview(args[1:], out)
+	case "approve":
+		err = runApprove(args[1:], in, out)
+	case "reject":
+		err = runReject(args[1:], out)
+	case "apply":
+		err = runApply(args[1:], out)
+	case "status":
+		err = runStatus(args[1:], out)
+	case "tree":
+		err = runTree(args[1:], out)
+	case "context":
+		err = runContext(args[1:], out)
+	case "scan":
+		err = runScan(args[1:], out)
+	case "plan":
+		err = runPlan(args[1:], out)
+	case "next":
+		err = runNext(args[1:], out)
+	case "export":
+		err = runExport(args[1:], out)
+	case "report":
+		err = runReport(args[1:], out)
+	case "verify":
+		err = runVerify(args[1:], out)
+	case "abort":
+		err = runAbort(args[1:], out)
+	case "import":
+		err = runImport(args[1:], out)
+	case "commit":
+		err = runCommit(args[1:], out)
+	default:
+		err = fmt.Errorf("unknown command %q", args[0])
+	}
+	if err != nil {
+		fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	return 0
+}
+
+func printHelp(out io.Writer) {
+	fmt.Fprintln(out, `Ebo Runtime CLI
+
+Usage:
+  ebo init [--agents codex,claude]
+  ebo add (--stdin | --file <path> | --dir <path>) [--dry-run]
+  ebo review [proposal-id]
+  ebo approve <proposal-id>
+  ebo apply <proposal-id>
+  ebo tree (list | show <id> | validate | search <text> | graph [--around <id>])
+  ebo status
+  ebo scan [node-id]
+  ebo plan [node-id]
+  ebo plan show <plan-id>
+  ebo next [plan-id]
+  ebo export <plan-id> [--format markdown|json]
+  ebo report <task-id> [--plan <plan-id>] --result passed|failed [--note "..."]
+  ebo commit <plan-id> [--dry-run] [--message "..."]
+  ebo import <path> [--out <dir>] [--dry-run]
+  ebo lock status
+  ebo doctor
+  ebo version`)
+}
+
+func runInit(args []string, out, errOut io.Writer) error {
+	fs := newFlagSet("init", errOut)
+	agents := fs.String("agents", "codex", "comma-separated agent docs to manage: codex,claude,none")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	root, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	paths := project.NewPaths(root)
+	if err := project.EnsureLayout(root); err != nil {
+		return err
+	}
+	if !fileExists(paths.ConfigFile) {
+		config := fmt.Sprintf("schema = \"ebo.config/v1\"\nproject_root = %q\ntree_dir = \".ebo/tree\"\nzero_ai = true\n", filepath.ToSlash(root))
+		if err := project.WriteFileAtomic(paths.ConfigFile, []byte(config), 0o644); err != nil {
+			return err
+		}
+	}
+	rootPrompt, err := project.NodePathForID(paths.TreeDir, project.RootID)
+	if err != nil {
+		return err
+	}
+	if !fileExists(rootPrompt) {
+		if err := project.WriteFileAtomic(rootPrompt, []byte(defaultRootPrompt()), 0o644); err != nil {
+			return err
+		}
+	}
+	if err := ensureGitignore(root); err != nil {
+		return err
+	}
+	for _, agent := range parseAgents(*agents) {
+		var path string
+		switch agent {
+		case "codex":
+			path = filepath.Join(root, "AGENTS.md")
+		case "claude":
+			path = filepath.Join(root, "CLAUDE.md")
+		default:
+			fmt.Fprintf(errOut, "warning: unknown agent %q ignored\n", agent)
+			continue
+		}
+		action, err := agentdocs.Update(path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s %s\n", action, filepath.Base(path))
+	}
+	fmt.Fprintf(out, "initialized Ebo project at %s\n", root)
+	return nil
+}
+
+func runDoctor(args []string, out io.Writer) error {
+	if len(args) > 0 {
+		return fmt.Errorf("doctor does not accept arguments")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	root, err := project.FindRoot(cwd)
+	if err != nil {
+		fmt.Fprintln(out, "not initialized: run ebo init first")
+		return err
+	}
+	paths := project.NewPaths(root)
+	issues := 0
+	check := func(ok bool, label string, detail string) {
+		if ok {
+			fmt.Fprintf(out, "ok   %s\n", label)
+			return
+		}
+		issues++
+		if detail == "" {
+			fmt.Fprintf(out, "fail %s\n", label)
+		} else {
+			fmt.Fprintf(out, "fail %s: %s\n", label, detail)
+		}
+	}
+	check(fileExists(paths.ConfigFile), "config", paths.ConfigFile)
+	check(dirExists(paths.TreeDir), "tree directory", paths.TreeDir)
+	check(dirExists(paths.ProposalsDir), "proposal directory", paths.ProposalsDir)
+	check(gitInside(root), "git repository", "not inside a Git work tree")
+
+	t, err := tree.LoadProject(root)
+	if err != nil {
+		return err
+	}
+	treeIssues := t.Validate()
+	check(len(treeIssues) == 0, "prompt tree", strings.Join(treeIssues, "; "))
+	if len(treeIssues) > 0 {
+		for _, issue := range treeIssues {
+			fmt.Fprintln(out, "  -", issue)
+		}
+	}
+	if containsManagedBlock(filepath.Join(root, "AGENTS.md")) {
+		fmt.Fprintln(out, "ok   AGENTS.md managed block")
+	} else {
+		fmt.Fprintln(out, "warn AGENTS.md has no Ebo managed block")
+	}
+	if info, err := lockfile.Read(root); err == nil {
+		fmt.Fprintf(out, "warn project lock exists: pid=%d command=%q since %s\n", info.PID, info.Command, info.CreatedAt)
+	} else {
+		fmt.Fprintln(out, "ok   project lock")
+	}
+	if issues > 0 {
+		return fmt.Errorf("%d issue(s) found", issues)
+	}
+	return nil
+}
+
+func runLock(args []string, out io.Writer) error {
+	if len(args) != 1 || args[0] != "status" {
+		return fmt.Errorf("usage: ebo lock status")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	info, err := lockfile.Read(root)
+	if os.IsNotExist(err) {
+		fmt.Fprintln(out, "unlocked")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "locked\n")
+	fmt.Fprintf(out, "path:    %s\n", lockfile.Path(root))
+	fmt.Fprintf(out, "pid:     %d\n", info.PID)
+	fmt.Fprintf(out, "command: %s\n", info.Command)
+	fmt.Fprintf(out, "since:   %s\n", info.CreatedAt)
+	return nil
+}
+
+func runConfig(args []string, out io.Writer) error {
+	if len(args) != 1 || args[0] != "get" {
+		return fmt.Errorf("only ebo config get is implemented in this MVP slice")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(project.NewPaths(root).ConfigFile)
+	if err != nil {
+		return err
+	}
+	_, err = out.Write(data)
+	return err
+}
+
+func runAdd(args []string, in io.Reader, out, errOut io.Writer) error {
+	fs := newFlagSet("add", errOut)
+	stdin := fs.Bool("stdin", false, "read prompt markdown from stdin")
+	file := fs.String("file", "", "read one prompt markdown file")
+	dir := fs.String("dir", "", "read prompt markdown files from directory")
+	dryRun := fs.Bool("dry-run", false, "validate and preview without creating a proposal")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	choices := 0
+	for _, enabled := range []bool{*stdin, *file != "", *dir != ""} {
+		if enabled {
+			choices++
+		}
+	}
+	if choices != 1 {
+		return fmt.Errorf("choose exactly one input: --stdin, --file, or --dir")
+	}
+	var sources []proposal.Source
+	switch {
+	case *stdin:
+		data, err := io.ReadAll(in)
+		if err != nil {
+			return err
+		}
+		sources = []proposal.Source{{Kind: "stdin", Path: "stdin", Name: "stdin.md", Data: data}}
+	case *file != "":
+		source, err := readPromptFile(root, *file)
+		if err != nil {
+			return err
+		}
+		sources = []proposal.Source{source}
+	case *dir != "":
+		sources, err = readPromptDir(root, *dir)
+		if err != nil {
+			return err
+		}
+	}
+	var meta *proposal.Meta
+	if *dryRun {
+		meta, err = proposal.Create(root, sources, true)
+		if err != nil {
+			return err
+		}
+	} else {
+		err = withProjectLock(root, "add", func() error {
+			var createErr error
+			meta, createErr = proposal.Create(root, sources, false)
+			return createErr
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if *dryRun {
+		fmt.Fprintf(out, "dry-run ok: %d node(s), proposal hash %s\n", len(meta.Nodes), meta.ProposalHash)
+	} else {
+		fmt.Fprintf(out, "created %s\n", meta.ID)
+		fmt.Fprintf(out, "hash    %s\n", meta.ProposalHash)
+		fmt.Fprintf(out, "next    ebo review %s\n", meta.ID)
+	}
+	for _, node := range meta.Nodes {
+		fmt.Fprintf(out, "- %s (%s) parent=%s\n", node.ID, node.Kind, emptyAsDash(node.Parent))
+	}
+	return nil
+}
+
+func runReview(args []string, out io.Writer) error {
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		items, err := proposal.List(root)
+		if err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			fmt.Fprintln(out, "no proposals")
+			return nil
+		}
+		for _, item := range items {
+			fmt.Fprintf(out, "%s  %s  %s  nodes=%d\n", item.ID, item.Status, item.ProposalHash, len(item.Nodes))
+		}
+		return nil
+	}
+	if len(args) != 1 {
+		return fmt.Errorf("usage: ebo review [proposal-id]")
+	}
+	meta, err := proposal.Load(root, args[0])
+	if err != nil {
+		return err
+	}
+	actualHash, err := proposal.RecomputeHash(root, meta)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "proposal: %s\n", meta.ID)
+	fmt.Fprintf(out, "status:   %s\n", meta.Status)
+	fmt.Fprintf(out, "hash:     %s\n", meta.ProposalHash)
+	if actualHash != meta.ProposalHash {
+		fmt.Fprintf(out, "warning:  stored content changed; actual hash is %s\n", actualHash)
+	}
+	fmt.Fprintln(out, "\nsources:")
+	for _, source := range meta.Sources {
+		fmt.Fprintf(out, "- %s %s %s\n", source.Kind, source.Path, source.SHA256)
+	}
+	fmt.Fprintln(out, "\nnodes:")
+	for _, node := range meta.Nodes {
+		fmt.Fprintf(out, "- %s (%s)\n", node.ID, node.Kind)
+		fmt.Fprintf(out, "  title: %s\n", node.Title)
+		fmt.Fprintf(out, "  parent: %s\n", emptyAsDash(node.Parent))
+		fmt.Fprintf(out, "  content: %s\n", node.ContentHash)
+	}
+	if meta.Status == "approved" {
+		fmt.Fprintf(out, "\napproved hash: %s\n", meta.ApprovedHash)
+	}
+	return nil
+}
+
+func runApprove(args []string, in io.Reader, out io.Writer) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: ebo approve <proposal-id>")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	meta, err := proposal.Load(root, args[0])
+	if err != nil {
+		return err
+	}
+	if !isTerminal(in) {
+		return fmt.Errorf("approve requires an interactive terminal")
+	}
+	fmt.Fprintf(out, "Proposal: %s\n", meta.ID)
+	fmt.Fprintf(out, "Hash:     %s\n", meta.ProposalHash)
+	fmt.Fprintln(out, "Type the exact hash to approve:")
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	hash := strings.TrimSpace(line)
+	var approved *proposal.Meta
+	err = withProjectLock(root, "approve", func() error {
+		var approveErr error
+		approved, approveErr = proposal.Approve(root, meta.ID, hash)
+		return approveErr
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "approved %s at %s\n", approved.ID, approved.ApprovedAt)
+	return nil
+}
+
+func runReject(args []string, out io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: ebo reject <proposal-id> --reason \"...\"")
+	}
+	id := args[0]
+	reason := valueFlag(args[1:], "reason")
+	if reason == "" {
+		return fmt.Errorf("--reason is required")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	var meta *proposal.Meta
+	err = withProjectLock(root, "reject", func() error {
+		var rejectErr error
+		meta, rejectErr = proposal.Reject(root, id, reason)
+		return rejectErr
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "rejected %s\n", meta.ID)
+	return nil
+}
+
+func runApply(args []string, out io.Writer) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: ebo apply <proposal-id>")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	var meta *proposal.Meta
+	err = withProjectLock(root, "apply", func() error {
+		var applyErr error
+		meta, applyErr = proposal.Apply(root, args[0])
+		return applyErr
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "applied %s\n", meta.ID)
+	return nil
+}
+
+func runStatus(args []string, out io.Writer) error {
+	if len(args) > 0 {
+		return fmt.Errorf("status does not accept arguments")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "project: %s\n", root)
+	proposals, err := proposal.List(root)
+	if err != nil {
+		return err
+	}
+	counts := map[string]int{}
+	for _, item := range proposals {
+		counts[item.Status]++
+	}
+	fmt.Fprintf(out, "proposals: proposed=%d approved=%d applied=%d rejected=%d\n", counts["proposed"], counts["approved"], counts["applied"], counts["rejected"])
+	t, err := tree.LoadProject(root)
+	if err != nil {
+		return err
+	}
+	issues := t.Validate()
+	if len(issues) > 0 {
+		fmt.Fprintf(out, "tree: invalid (%d issue(s))\n", len(issues))
+	} else {
+		fmt.Fprintf(out, "tree: ok (%d node(s))\n", len(t.Nodes))
+	}
+	dirty := t.DirtyNodes()
+	fmt.Fprintf(out, "dirty nodes: %d\n", len(dirty))
+	for _, id := range dirty {
+		fmt.Fprintf(out, "- %s\n", id)
+	}
+	plans, err := planner.List(root)
+	if err != nil {
+		return err
+	}
+	planCounts := map[string]int{}
+	for _, item := range plans {
+		planCounts[item.Status]++
+	}
+	fmt.Fprintf(out, "plans: planned=%d running=%d completed=%d failed=%d blocked=%d aborted=%d empty=%d\n", planCounts["planned"], planCounts["running"], planCounts["completed"], planCounts["failed"], planCounts["blocked"], planCounts["aborted"], planCounts["empty"])
+	return nil
+}
+
+func runTree(args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: ebo tree <list|show|validate|search|graph>")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	t, err := tree.LoadProject(root)
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "list":
+		return treeList(t, out)
+	case "show":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: ebo tree show <node-id>")
+		}
+		return treeShow(t, args[1], out)
+	case "validate":
+		issues := t.Validate()
+		if len(issues) == 0 {
+			fmt.Fprintln(out, "tree ok")
+			return nil
+		}
+		for _, issue := range issues {
+			fmt.Fprintln(out, "-", issue)
+		}
+		return fmt.Errorf("tree invalid: %d issue(s)", len(issues))
+	case "search":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: ebo tree search <text>")
+		}
+		return treeSearch(t, args[1], out)
+	case "graph":
+		return treeGraph(t, args[1:], out)
+	default:
+		return fmt.Errorf("unknown tree command %q", args[0])
+	}
+}
+
+func treeList(t *tree.Tree, out io.Writer) error {
+	effective := t.EffectiveHashes()
+	for _, id := range t.IDs() {
+		node := t.Nodes[id]
+		dirty := "dirty"
+		if node.Hash.Satisfied != "" && node.Hash.Satisfied == effective[id] {
+			dirty = "in_sync"
+		}
+		fmt.Fprintf(out, "%s  spec=%s execution=%s sync=%s computed=%s\n", id, node.State.Spec, node.State.Execution, dirty, effective[id])
+	}
+	return nil
+}
+
+func treeShow(t *tree.Tree, id string, out io.Writer) error {
+	node := t.Nodes[id]
+	if node == nil {
+		return fmt.Errorf("node %s not found", id)
+	}
+	fmt.Fprintf(out, "id:        %s\n", node.ID)
+	fmt.Fprintf(out, "title:     %s\n", node.Title)
+	fmt.Fprintf(out, "kind:      %s\n", node.Kind)
+	fmt.Fprintf(out, "parent:    %s\n", emptyAsDash(node.Parent))
+	fmt.Fprintf(out, "state:     spec=%s execution=%s sync=%s\n", node.State.Spec, node.State.Execution, node.State.Sync)
+	fmt.Fprintf(out, "file:      %s\n", t.Files[id])
+	fmt.Fprintf(out, "content:   %s\n", document.ContentHash(node))
+	fmt.Fprintf(out, "effective: %s\n", t.EffectiveHashes()[id])
+	if len(node.Links) > 0 {
+		fmt.Fprintln(out, "links:")
+		for _, typ := range sortedLinkTypes(node.Links) {
+			for _, link := range node.Links[typ] {
+				if link.Reason == "" {
+					fmt.Fprintf(out, "- %s -> %s\n", typ, link.ID)
+				} else {
+					fmt.Fprintf(out, "- %s -> %s: %s\n", typ, link.ID, link.Reason)
+				}
+			}
+		}
+	}
+	if strings.TrimSpace(node.Body) != "" {
+		fmt.Fprintln(out, "\n--- body ---")
+		fmt.Fprintln(out, strings.TrimSpace(node.Body))
+	}
+	return nil
+}
+
+func treeSearch(t *tree.Tree, query string, out io.Writer) error {
+	query = strings.ToLower(query)
+	matches := 0
+	for _, id := range t.IDs() {
+		node := t.Nodes[id]
+		hay := strings.ToLower(node.ID + "\n" + node.Title + "\n" + node.Body)
+		for _, links := range node.Links {
+			for _, link := range links {
+				hay += "\n" + strings.ToLower(link.ID+" "+link.Reason)
+			}
+		}
+		if strings.Contains(hay, query) {
+			matches++
+			fmt.Fprintf(out, "%s  %s\n", node.ID, node.Title)
+		}
+	}
+	if matches == 0 {
+		fmt.Fprintln(out, "no matches")
+	}
+	return nil
+}
+
+func treeGraph(t *tree.Tree, args []string, out io.Writer) error {
+	around := ""
+	if len(args) == 1 {
+		around = args[0]
+	}
+	if len(args) == 2 && args[0] == "--around" {
+		around = args[1]
+	}
+	if len(args) > 2 || (len(args) == 2 && args[0] != "--around") {
+		return fmt.Errorf("usage: ebo tree graph [node-id] | ebo tree graph --around <node-id>")
+	}
+	ids := t.IDs()
+	if around != "" {
+		if t.Nodes[around] == nil {
+			return fmt.Errorf("node %s not found", around)
+		}
+		set := map[string]bool{around: true}
+		for _, child := range t.Children(around) {
+			set[child] = true
+		}
+		if parent := t.Nodes[around].Parent; parent != "" {
+			set[parent] = true
+		}
+		for typ, links := range t.Nodes[around].Links {
+			_ = typ
+			for _, link := range links {
+				set[link.ID] = true
+			}
+		}
+		ids = ids[:0]
+		for id := range set {
+			if t.Nodes[id] != nil {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+	}
+	for _, id := range ids {
+		node := t.Nodes[id]
+		if node.Parent != "" {
+			fmt.Fprintf(out, "%s --parent--> %s\n", node.ID, node.Parent)
+		} else {
+			fmt.Fprintf(out, "%s\n", node.ID)
+		}
+		for _, typ := range sortedLinkTypes(node.Links) {
+			for _, link := range node.Links[typ] {
+				fmt.Fprintf(out, "%s --%s--> %s\n", node.ID, typ, link.ID)
+			}
+		}
+	}
+	return nil
+}
+
+func runContext(args []string, out io.Writer) error {
+	nodeID, depth, outPath, err := parseContextArgs(args)
+	if err != nil {
+		return err
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	t, err := tree.LoadProject(root)
+	if err != nil {
+		return err
+	}
+	if t.Nodes[nodeID] == nil {
+		return fmt.Errorf("node %s not found", nodeID)
+	}
+	payload := buildContextPayload(t, nodeID, depth)
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if outPath != "" {
+		if err := project.WriteFileAtomic(outPath, data, 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "wrote %s\n", outPath)
+		return nil
+	}
+	_, err = out.Write(data)
+	return err
+}
+
+func runScan(args []string, out io.Writer) error {
+	if len(args) > 1 {
+		return fmt.Errorf("usage: ebo scan [node-id]")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	t, err := tree.LoadProject(root)
+	if err != nil {
+		return err
+	}
+	if issues := t.Validate(); len(issues) > 0 {
+		for _, issue := range issues {
+			fmt.Fprintln(out, "-", issue)
+		}
+		return fmt.Errorf("tree invalid")
+	}
+	order := t.ExecutionOrder()
+	if len(args) == 1 {
+		order = filterOrderFromRoot(t, order, args[0])
+	}
+	fmt.Fprintf(out, "dirty tasks: %d\n", len(order))
+	for i, id := range order {
+		fmt.Fprintf(out, "%d. %s  %s\n", i+1, id, t.Nodes[id].Title)
+	}
+	return nil
+}
+
+func runPlan(args []string, out io.Writer) error {
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	if len(args) > 0 {
+		switch args[0] {
+		case "list":
+			if len(args) != 1 {
+				return fmt.Errorf("usage: ebo plan list")
+			}
+			plans, err := planner.List(root)
+			if err != nil {
+				return err
+			}
+			if len(plans) == 0 {
+				fmt.Fprintln(out, "no plans")
+				return nil
+			}
+			for _, plan := range plans {
+				fmt.Fprintf(out, "%s  %s  tasks=%d  root=%s\n", plan.ID, plan.Status, len(plan.Tasks), emptyAsDash(plan.Root))
+			}
+			return nil
+		case "show":
+			if len(args) != 2 {
+				return fmt.Errorf("usage: ebo plan show <plan-id>")
+			}
+			plan, err := planner.Load(root, args[1])
+			if err != nil {
+				return err
+			}
+			return printPlan(plan, out)
+		}
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("usage: ebo plan [node-id]")
+	}
+	rootNode := ""
+	if len(args) == 1 {
+		rootNode = args[0]
+	}
+	var plan *planner.Plan
+	err = withProjectLock(root, "plan", func() error {
+		t, err := tree.LoadProject(root)
+		if err != nil {
+			return err
+		}
+		var createErr error
+		plan, createErr = planner.Create(root, t, rootNode)
+		if createErr != nil {
+			return createErr
+		}
+		return planner.Save(root, plan)
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "created %s\n", plan.ID)
+	fmt.Fprintf(out, "status  %s\n", plan.Status)
+	fmt.Fprintf(out, "tasks   %d\n", len(plan.Tasks))
+	fmt.Fprintf(out, "next    ebo next %s\n", plan.ID)
+	return nil
+}
+
+func runNext(args []string, out io.Writer) error {
+	if len(args) > 1 {
+		return fmt.Errorf("usage: ebo next [plan-id]")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	return withProjectLock(root, "next", func() error {
+		t, err := tree.LoadProject(root)
+		if err != nil {
+			return err
+		}
+		if issues := t.Validate(); len(issues) > 0 {
+			return fmt.Errorf("tree invalid: %s", strings.Join(issues, "; "))
+		}
+		var plan *planner.Plan
+		if len(args) == 1 {
+			plan, err = planner.Load(root, args[0])
+			if err != nil {
+				return err
+			}
+		} else {
+			plan, err = planner.LatestActive(root)
+			if err != nil {
+				return err
+			}
+			if plan == nil {
+				plan, err = planner.Create(root, t, "")
+				if err != nil {
+					return err
+				}
+			}
+		}
+		task := planner.NextTask(plan)
+		if task == nil {
+			fmt.Fprintln(out, "no dirty tasks")
+			return nil
+		}
+		if plan.Status == "planned" {
+			plan.Status = "running"
+			if err := planner.Save(root, plan); err != nil {
+				return err
+			}
+		}
+		node := t.Nodes[task.PromptID]
+		if node == nil {
+			return fmt.Errorf("prompt %s from plan %s not found", task.PromptID, plan.ID)
+		}
+		fmt.Fprint(out, planner.TaskPackage(plan, node, task))
+		return nil
+	})
+}
+
+func runExport(args []string, out io.Writer) error {
+	planID, format, outPath, err := parseExportArgs(args)
+	if err != nil {
+		return err
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	plan, err := planner.Load(root, planID)
+	if err != nil {
+		return err
+	}
+	var data []byte
+	switch format {
+	case "json":
+		data, err = json.MarshalIndent(plan, "", "  ")
+		if err != nil {
+			return err
+		}
+		data = append(data, '\n')
+	case "markdown":
+		t, err := tree.LoadProject(root)
+		if err != nil {
+			return err
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "# Ebo Plan %s\n\n", plan.ID)
+		for i := range plan.Tasks {
+			task := &plan.Tasks[i]
+			node := t.Nodes[task.PromptID]
+			if node == nil {
+				continue
+			}
+			if i > 0 {
+				fmt.Fprint(&b, "\n---\n\n")
+			}
+			b.WriteString(planner.TaskPackage(plan, node, task))
+		}
+		data = []byte(b.String())
+	default:
+		return fmt.Errorf("--format must be markdown or json")
+	}
+	if outPath != "" {
+		if err := project.WriteFileAtomic(outPath, data, 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "wrote %s\n", outPath)
+		return nil
+	}
+	_, err = out.Write(data)
+	return err
+}
+
+func runReport(args []string, out io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: ebo report <task-id> [--plan <plan-id>] --result passed|failed [--note \"...\"]")
+	}
+	taskID := args[0]
+	result := valueFlag(args[1:], "result")
+	note := valueFlag(args[1:], "note")
+	planID := valueFlag(args[1:], "plan")
+	if result != "passed" && result != "failed" && result != "blocked" {
+		return fmt.Errorf("--result must be passed, failed, or blocked")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	return withProjectLock(root, "report", func() error {
+		appliedPlanID := ""
+		if planID != "" {
+			plan, err := planner.Load(root, planID)
+			if err != nil {
+				return err
+			}
+			task, err := planner.FindTask(plan, taskID)
+			if err != nil {
+				return err
+			}
+			if err := tree.ApplyTaskResult(root, tree.TaskResultUpdate{
+				PromptID:      task.PromptID,
+				Result:        result,
+				ContentHash:   task.ContentHash,
+				EffectiveHash: task.EffectiveHash,
+			}); err != nil {
+				return err
+			}
+			task, err = planner.Report(root, plan, taskID, result, note)
+			if err != nil {
+				return err
+			}
+			appliedPlanID = plan.ID
+			taskID = task.ID
+			fmt.Fprintf(out, "updated %s task %s -> %s\n", plan.ID, task.ID, result)
+		} else if plan, err := planner.LatestActive(root); err != nil {
+			return err
+		} else if plan != nil {
+			task, err := planner.FindTask(plan, taskID)
+			if err != nil {
+				return err
+			}
+			if err := tree.ApplyTaskResult(root, tree.TaskResultUpdate{
+				PromptID:      task.PromptID,
+				Result:        result,
+				ContentHash:   task.ContentHash,
+				EffectiveHash: task.EffectiveHash,
+			}); err != nil {
+				return err
+			}
+			task, err = planner.Report(root, plan, taskID, result, note)
+			if err != nil {
+				return err
+			}
+			appliedPlanID = plan.ID
+			taskID = task.ID
+			fmt.Fprintf(out, "updated %s task %s -> %s\n", plan.ID, task.ID, result)
+		}
+		receipt := map[string]string{
+			"schema":     "ebo.receipt/v1",
+			"plan_id":    appliedPlanID,
+			"task_id":    taskID,
+			"result":     result,
+			"note":       note,
+			"created_at": time.Now().UTC().Format(time.RFC3339),
+		}
+		data, err := json.MarshalIndent(receipt, "", "  ")
+		if err != nil {
+			return err
+		}
+		data = append(data, '\n')
+		name := fmt.Sprintf("%s-%s.json", project.SafeFilename(taskID), time.Now().UTC().Format("20060102-150405"))
+		path := filepath.Join(project.NewPaths(root).ReceiptsDir, name)
+		if err := project.WriteFileAtomic(path, data, 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "wrote receipt %s\n", path)
+		return nil
+	})
+}
+
+func runVerify(args []string, out io.Writer) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: ebo verify <plan-id>")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	plan, err := planner.Load(root, args[0])
+	if err != nil {
+		return err
+	}
+	pending := 0
+	failed := 0
+	blocked := 0
+	for _, task := range plan.Tasks {
+		switch task.Status {
+		case "pending":
+			pending++
+		case "failed":
+			failed++
+		case "blocked":
+			blocked++
+		}
+	}
+	fmt.Fprintf(out, "plan %s status=%s pending=%d failed=%d blocked=%d\n", plan.ID, plan.Status, pending, failed, blocked)
+	if pending+failed+blocked > 0 {
+		return fmt.Errorf("plan is not complete")
+	}
+	return nil
+}
+
+func runAbort(args []string, out io.Writer) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: ebo abort <plan-id>")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	return withProjectLock(root, "abort", func() error {
+		plan, err := planner.Load(root, args[0])
+		if err != nil {
+			return err
+		}
+		plan.Status = "aborted"
+		if err := planner.Save(root, plan); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "aborted %s\n", plan.ID)
+		return nil
+	})
+}
+
+func runCommit(args []string, out io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: ebo commit <plan-id> [--dry-run] [--message \"...\"]")
+	}
+	planID := args[0]
+	dryRun := hasFlag(args[1:], "dry-run")
+	message := valueFlag(args[1:], "message")
+	if message == "" {
+		message = "ebo: complete " + planID
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	return withProjectLock(root, "commit", func() error {
+		plan, err := planner.Load(root, planID)
+		if err != nil {
+			return err
+		}
+		if plan.Status != "completed" {
+			return fmt.Errorf("plan %s is %s; only completed plans can be committed", plan.ID, plan.Status)
+		}
+		status, err := gitx.Status(root)
+		if err != nil {
+			return err
+		}
+		pathspecs := []string{
+			".ebo/tree",
+			filepath.ToSlash(filepath.Join(".ebo", "plans", plan.ID+".json")),
+			".ebo/receipts",
+		}
+		fmt.Fprintf(out, "plan:    %s\n", plan.ID)
+		fmt.Fprintf(out, "message: %s\n", message)
+		fmt.Fprintln(out, "ebo paths staged by this command:")
+		for _, pathspec := range pathspecs {
+			fmt.Fprintf(out, "- %s\n", pathspec)
+		}
+		if len(status) > 0 {
+			fmt.Fprintln(out, "current git status:")
+			for _, line := range status {
+				fmt.Fprintf(out, "- %s\n", line)
+			}
+		}
+		if dryRun {
+			fmt.Fprintln(out, "dry-run: no git add or git commit executed")
+			return nil
+		}
+		if err := gitx.Add(root, pathspecs...); err != nil {
+			return err
+		}
+		staged, err := gitx.CachedNames(root)
+		if err != nil {
+			return err
+		}
+		if len(staged) == 0 {
+			return fmt.Errorf("nothing is staged for commit")
+		}
+		if err := gitx.Commit(root, message); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "committed %s\n", plan.ID)
+		return nil
+	})
+}
+
+func runImport(args []string, out io.Writer) error {
+	target, outDir, dryRun, err := parseImportArgs(args)
+	if err != nil {
+		return err
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	files, err := inventoryFiles(root, absTarget)
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		fmt.Fprintf(out, "would export evidence for %d file(s)\n", len(files))
+		return nil
+	}
+	if outDir == "" {
+		outDir = filepath.Join(project.NewPaths(root).RuntimeDir, "import-"+time.Now().UTC().Format("20060102-150405"))
+	}
+	payload := map[string]any{
+		"schema":     "ebo.evidence/v1",
+		"root":       filepath.ToSlash(root),
+		"target":     filepath.ToSlash(absTarget),
+		"created_at": time.Now().UTC().Format(time.RFC3339),
+		"files":      files,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	path := filepath.Join(outDir, "evidence.json")
+	if err := withProjectLock(root, "import", func() error {
+		return project.WriteFileAtomic(path, data, 0o644)
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "wrote evidence package %s\n", path)
+	return nil
+}
+
+func newFlagSet(name string, out io.Writer) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(out)
+	return fs
+}
+
+func requireRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return project.FindRoot(cwd)
+}
+
+func withProjectLock(root, command string, fn func() error) error {
+	lock, err := lockfile.Acquire(root, command)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	return fn()
+}
+
+func defaultRootPrompt() string {
+	return `---
+schema: ebo.prompt/v1
+id: project.root
+title: Project Root
+kind: project
+parent:
+revision: 1
+origin: human
+confidence: confirmed
+state:
+  spec: approved
+  execution: adopted
+  sync: in_sync
+hash:
+  satisfied:
+links:
+  references: []
+---
+## Intent
+
+Capture the project as one logical Prompt Tree.
+
+## Context
+
+This node is the single root. Every non-root prompt must declare a parent that eventually reaches project.root.
+
+## Acceptance
+
+- The tree has exactly one project.root.
+- Every non-root prompt has one valid parent.
+`
+}
+
+func parseAgents(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "none" {
+		return nil
+	}
+	var agents []string
+	for _, item := range strings.Split(value, ",") {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if item != "" {
+			agents = append(agents, item)
+		}
+	}
+	return agents
+}
+
+func ensureGitignore(root string) error {
+	path := filepath.Join(root, ".gitignore")
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	text := string(data)
+	lines := []string{
+		".ebo/cache/",
+		".ebo/locks/",
+		".ebo/tmp/",
+		".ebo/runtime/sessions/",
+		".ebo/runtime/logs/",
+	}
+	changed := false
+	for _, line := range lines {
+		if !containsGitignoreLine(text, line) {
+			if len(text) > 0 && !strings.HasSuffix(text, "\n") {
+				text += "\n"
+			}
+			text += line + "\n"
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return project.WriteFileAtomic(path, []byte(text), 0o644)
+}
+
+func readPromptFile(root, path string) (proposal.Source, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return proposal.Source{}, err
+	}
+	info, err := os.Lstat(abs)
+	if err != nil {
+		return proposal.Source{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return proposal.Source{}, fmt.Errorf("refusing to read symlink %s", path)
+	}
+	if info.Size() > 2*1024*1024 {
+		return proposal.Source{}, fmt.Errorf("%s is larger than 2 MiB", path)
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return proposal.Source{}, err
+	}
+	return proposal.Source{
+		Kind: "file",
+		Path: displayPath(root, abs),
+		Name: filepath.Base(abs),
+		Data: data,
+	}, nil
+}
+
+func readPromptDir(root, dir string) ([]proposal.Source, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	err = filepath.WalkDir(abs, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to read symlink %s", path)
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.ToLower(filepath.Ext(path)) == ".md" {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no Markdown files found in %s", dir)
+	}
+	if len(paths) > 100 {
+		return nil, fmt.Errorf("too many Markdown files: %d > 100", len(paths))
+	}
+	var total int64
+	sources := make([]proposal.Source, 0, len(paths))
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if info.Size() > 2*1024*1024 {
+			return nil, fmt.Errorf("%s is larger than 2 MiB", path)
+		}
+		total += info.Size()
+		if total > 10*1024*1024 {
+			return nil, fmt.Errorf("total prompt input is larger than 10 MiB")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		sources = append(sources, proposal.Source{
+			Kind: "file",
+			Path: displayPath(root, path),
+			Name: filepath.Base(path),
+			Data: data,
+		})
+	}
+	return sources, nil
+}
+
+func displayPath(root, path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.ToSlash(path)
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err == nil && !strings.HasPrefix(rel, "..") && rel != "." {
+		return filepath.ToSlash(rel)
+	}
+	return filepath.ToSlash(abs)
+}
+
+func isTerminal(in io.Reader) bool {
+	file, ok := in.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func valueFlag(args []string, name string) string {
+	prefix := "--" + name + "="
+	for i, arg := range args {
+		if strings.HasPrefix(arg, prefix) {
+			return strings.TrimPrefix(arg, prefix)
+		}
+		if arg == "--"+name && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func hasFlag(args []string, name string) bool {
+	flagName := "--" + name
+	for _, arg := range args {
+		if arg == flagName {
+			return true
+		}
+	}
+	return false
+}
+
+func printPlan(plan *planner.Plan, out io.Writer) error {
+	fmt.Fprintf(out, "plan:       %s\n", plan.ID)
+	fmt.Fprintf(out, "status:     %s\n", plan.Status)
+	fmt.Fprintf(out, "root:       %s\n", emptyAsDash(plan.Root))
+	fmt.Fprintf(out, "base:       %s\n", emptyAsDash(plan.BaseCommit))
+	fmt.Fprintf(out, "created:    %s\n", plan.CreatedAt)
+	fmt.Fprintf(out, "updated:    %s\n", plan.UpdatedAt)
+	fmt.Fprintf(out, "tasks:      %d\n", len(plan.Tasks))
+	for i, task := range plan.Tasks {
+		fmt.Fprintf(out, "%d. %s  %s  %s\n", i+1, task.ID, task.Status, task.Title)
+	}
+	return nil
+}
+
+func parseExportArgs(args []string) (planID, format, outPath string, err error) {
+	format = "markdown"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--format":
+			if i+1 >= len(args) {
+				err = fmt.Errorf("--format requires a value")
+				return
+			}
+			format = args[i+1]
+			i++
+		case "--out":
+			if i+1 >= len(args) {
+				err = fmt.Errorf("--out requires a value")
+				return
+			}
+			outPath = args[i+1]
+			i++
+		default:
+			if strings.HasPrefix(args[i], "--format=") {
+				format = strings.TrimPrefix(args[i], "--format=")
+				continue
+			}
+			if strings.HasPrefix(args[i], "--out=") {
+				outPath = strings.TrimPrefix(args[i], "--out=")
+				continue
+			}
+			if strings.HasPrefix(args[i], "-") {
+				err = fmt.Errorf("unknown export flag %s", args[i])
+				return
+			}
+			if planID != "" {
+				err = fmt.Errorf("export accepts one plan id")
+				return
+			}
+			planID = args[i]
+		}
+	}
+	if planID == "" {
+		err = fmt.Errorf("usage: ebo export <plan-id> [--format markdown|json] [--out path]")
+		return
+	}
+	return
+}
+
+func parseContextArgs(args []string) (string, int, string, error) {
+	depth := 2
+	outPath := ""
+	nodeID := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--depth":
+			if i+1 >= len(args) {
+				return "", 0, "", fmt.Errorf("--depth requires a value")
+			}
+			var n int
+			if _, err := fmt.Sscanf(args[i+1], "%d", &n); err != nil {
+				return "", 0, "", fmt.Errorf("--depth must be a number")
+			}
+			depth = n
+			i++
+		case "--out":
+			if i+1 >= len(args) {
+				return "", 0, "", fmt.Errorf("--out requires a value")
+			}
+			outPath = args[i+1]
+			i++
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return "", 0, "", fmt.Errorf("unknown flag %s", args[i])
+			}
+			if nodeID != "" {
+				return "", 0, "", fmt.Errorf("context accepts one node id")
+			}
+			nodeID = args[i]
+		}
+	}
+	if nodeID == "" {
+		return "", 0, "", fmt.Errorf("usage: ebo context <node-id> [--depth 2] [--out path]")
+	}
+	if depth < 0 {
+		depth = 0
+	}
+	return nodeID, depth, outPath, nil
+}
+
+func buildContextPayload(t *tree.Tree, nodeID string, depth int) map[string]any {
+	selected := map[string]bool{nodeID: true}
+	cur := nodeID
+	for i := 0; i < depth; i++ {
+		node := t.Nodes[cur]
+		if node == nil || node.Parent == "" {
+			break
+		}
+		selected[node.Parent] = true
+		cur = node.Parent
+	}
+	frontier := []string{nodeID}
+	for i := 0; i < depth; i++ {
+		var next []string
+		for _, id := range frontier {
+			for _, child := range t.Children(id) {
+				if !selected[child] {
+					selected[child] = true
+					next = append(next, child)
+				}
+			}
+		}
+		frontier = next
+	}
+	for typ, links := range t.Nodes[nodeID].Links {
+		_ = typ
+		for _, link := range links {
+			if t.Nodes[link.ID] != nil {
+				selected[link.ID] = true
+			}
+		}
+	}
+	ids := make([]string, 0, len(selected))
+	for id := range selected {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	nodes := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		node := t.Nodes[id]
+		nodes = append(nodes, map[string]any{
+			"id":     node.ID,
+			"title":  node.Title,
+			"kind":   node.Kind,
+			"parent": node.Parent,
+			"state":  node.State,
+			"links":  node.Links,
+			"body":   strings.TrimSpace(node.Body),
+		})
+	}
+	return map[string]any{
+		"schema": "ebo.context/v1",
+		"root":   project.RootID,
+		"focus":  nodeID,
+		"depth":  depth,
+		"nodes":  nodes,
+	}
+}
+
+func filterOrderFromRoot(t *tree.Tree, order []string, id string) []string {
+	selected := map[string]bool{}
+	var mark func(string)
+	mark = func(cur string) {
+		if selected[cur] {
+			return
+		}
+		selected[cur] = true
+		for _, child := range t.Children(cur) {
+			mark(child)
+		}
+	}
+	mark(id)
+	var out []string
+	for _, task := range order {
+		if selected[task] {
+			out = append(out, task)
+		}
+	}
+	return out
+}
+
+func parseImportArgs(args []string) (target, outDir string, dryRun bool, err error) {
+	target = "."
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run":
+			dryRun = true
+		case "--out":
+			if i+1 >= len(args) {
+				err = fmt.Errorf("--out requires a value")
+				return
+			}
+			outDir = args[i+1]
+			i++
+		case "--history-depth":
+			if i+1 >= len(args) {
+				err = fmt.Errorf("--history-depth requires a value")
+				return
+			}
+			i++
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				err = fmt.Errorf("unknown import flag %s", args[i])
+				return
+			}
+			target = args[i]
+		}
+	}
+	return
+}
+
+func inventoryFiles(root, target string) ([]map[string]any, error) {
+	var files []map[string]any
+	err := filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() {
+			switch name {
+			case ".git", ".ebo", "node_modules", "dist", "bin":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.Size() > 1024*1024 {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files = append(files, map[string]any{
+			"path":   displayPath(root, path),
+			"size":   info.Size(),
+			"sha256": document.SHA256(data),
+		})
+		return nil
+	})
+	sort.Slice(files, func(i, j int) bool {
+		return files[i]["path"].(string) < files[j]["path"].(string)
+	})
+	return files, err
+}
+
+func sortedLinkTypes(links map[string][]document.Link) []string {
+	types := make([]string, 0, len(links))
+	for typ := range links {
+		types = append(types, typ)
+	}
+	sort.Strings(types)
+	return types
+}
+
+func gitInside(root string) bool {
+	if _, err := exec.LookPath("git"); err != nil {
+		return false
+	}
+	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	cmd.Dir = root
+	output, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(output)) == "true"
+}
+
+func containsManagedBlock(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	text := string(data)
+	return strings.Contains(text, "<!-- EBO:START -->") && strings.Contains(text, "<!-- EBO:END -->")
+}
+
+func containsGitignoreLine(text, line string) bool {
+	for _, existing := range strings.Split(text, "\n") {
+		if strings.TrimSpace(existing) == line {
+			return true
+		}
+	}
+	return false
+}
+
+func emptyAsDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}

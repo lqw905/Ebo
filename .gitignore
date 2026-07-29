@@ -1,0 +1,11 @@
+docs/
+dist/
+*.tgz
+/ebo
+/ebo.exe
+coverage.out
+.ebo/cache/
+.ebo/locks/
+.ebo/tmp/
+.ebo/runtime/sessions/
+.ebo/runtime/logs/
