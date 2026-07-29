@@ -72,8 +72,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          npm view "@lqw905/ebo-win32-x64@${version}" version
-          npm view "@lqw905/ebo-darwin-arm64@${version}" version
+          npm view "@aibo666/ebo-win32-x64@${version}" version
+          npm view "@aibo666/ebo-darwin-arm64@${version}" version
 
       - name: Publish root npm package
         run: npm publish ./npm/root --access public --provenance

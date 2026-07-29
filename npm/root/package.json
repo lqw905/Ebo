@@ -1,5 +1,5 @@
 {
-  "name": "@lqw905/ebo",
+  "name": "@aibo666/ebo",
   "version": "0.1.0",
   "description": "Local CLI runtime for managing an Ebo Prompt Tree.",
   "license": "MIT",
@@ -15,8 +15,8 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "@lqw905/ebo-win32-x64": "0.1.0",
-    "@lqw905/ebo-darwin-arm64": "0.1.0"
+    "@aibo666/ebo-win32-x64": "0.1.0",
+    "@aibo666/ebo-darwin-arm64": "0.1.0"
   },
   "publishConfig": {
     "access": "public"

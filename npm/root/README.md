@@ -1,9 +1,9 @@
-# @lqw905/ebo
+# @aibo666/ebo
 
 This npm package is a small launcher for the native Ebo CLI binary. The core runtime is implemented in Go and distributed through platform-specific optional packages.
 
 ```bash
-npm install --global @lqw905/ebo
+npm install --global @aibo666/ebo
 ebo version
 ```
 

@@ -5,8 +5,8 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 
 const targets = {
-  "win32-x64": { packageName: "@lqw905/ebo-win32-x64", binary: "bin/ebo.exe" },
-  "darwin-arm64": { packageName: "@lqw905/ebo-darwin-arm64", binary: "bin/ebo" }
+  "win32-x64": { packageName: "@aibo666/ebo-win32-x64", binary: "bin/ebo.exe" },
+  "darwin-arm64": { packageName: "@aibo666/ebo-darwin-arm64", binary: "bin/ebo" }
 };
 
 const overrideBinary = process.env.EBO_BIN;
@@ -20,7 +20,7 @@ if (overrideBinary) {
     const packageJSON = require.resolve(`${target.packageName}/package.json`);
     binary = path.join(path.dirname(packageJSON), target.binary);
   } catch (error) {
-    fail(`Could not find ${target.packageName}. Reinstall @lqw905/ebo for ${process.platform}-${process.arch}.`);
+    fail(`Could not find ${target.packageName}. Reinstall @aibo666/ebo for ${process.platform}-${process.arch}.`);
   }
 } else {
   fail(`Ebo does not ship an npm binary for ${process.platform}-${process.arch}.`);

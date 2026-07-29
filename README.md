@@ -107,16 +107,16 @@ write dist/checksums.txt
 node scripts/prepare-npm-packages.mjs X.Y.Z dist
 npm pack --dry-run for every package
 npm publish platform packages first
-npm publish @lqw905/ebo last
+npm publish @aibo666/ebo last
 create GitHub Release with binaries and checksums
 ```
 
 The first npm release intentionally ships only:
 
 ```text
-@lqw905/ebo
-@lqw905/ebo-win32-x64
-@lqw905/ebo-darwin-arm64
+@aibo666/ebo
+@aibo666/ebo-win32-x64
+@aibo666/ebo-darwin-arm64
 ```
 
 Other platforms can be added when there is demand.

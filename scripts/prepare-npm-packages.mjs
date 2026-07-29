@@ -15,13 +15,13 @@ if (!version || !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
 const targets = [
   {
     dir: "win32-x64",
-    packageName: "@lqw905/ebo-win32-x64",
+    packageName: "@aibo666/ebo-win32-x64",
     artifact: "ebo-windows-amd64.exe",
     binary: "ebo.exe"
   },
   {
     dir: "darwin-arm64",
-    packageName: "@lqw905/ebo-darwin-arm64",
+    packageName: "@aibo666/ebo-darwin-arm64",
     artifact: "ebo-darwin-arm64",
     binary: "ebo"
   }

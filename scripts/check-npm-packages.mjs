@@ -6,11 +6,11 @@ import path from "node:path";
 
 const root = readJSON("npm/root/package.json");
 const platforms = [
-  ["win32-x64", "@lqw905/ebo-win32-x64"],
-  ["darwin-arm64", "@lqw905/ebo-darwin-arm64"]
+  ["win32-x64", "@aibo666/ebo-win32-x64"],
+  ["darwin-arm64", "@aibo666/ebo-darwin-arm64"]
 ];
 
-assert(root.name === "@lqw905/ebo", "root package name mismatch");
+assert(root.name === "@aibo666/ebo", "root package name mismatch");
 assert(root.bin && root.bin.ebo === "bin/ebo.js", "root bin.ebo must be bin/ebo.js");
 assert(root.publishConfig && root.publishConfig.access === "public", "root package must publish publicly");
 
