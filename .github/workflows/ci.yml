@@ -60,14 +60,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           printf fake > dist/ebo-windows-amd64.exe
-          printf fake > dist/ebo-linux-amd64
-          printf fake > dist/ebo-linux-arm64
-          printf fake > dist/ebo-darwin-amd64
           printf fake > dist/ebo-darwin-arm64
           node scripts/prepare-npm-packages.mjs 0.1.999 dist
           node scripts/check-npm-packages.mjs
           npm pack --dry-run ./npm/platforms/win32-x64
-          npm pack --dry-run ./npm/platforms/linux-x64
-          npm pack --dry-run ./npm/platforms/linux-arm64
-          npm pack --dry-run ./npm/platforms/darwin-x64
           npm pack --dry-run ./npm/platforms/darwin-arm64

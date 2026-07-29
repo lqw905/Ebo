@@ -23,7 +23,7 @@ node scripts/check-npm-packages.mjs
 npm pack --dry-run ./npm/root
 ```
 
-The npm CI job also runs a packaging smoke test with fake binaries to verify the platform package layout.
+The npm CI job also runs a packaging smoke test with fake binaries to verify the supported platform package layout.
 
 ## Implemented Commands
 
@@ -85,6 +85,7 @@ ebo lock status
 - Conservative `commit` orchestration for completed plans.
 - Basic evidence package export for reverse import workflows.
 - npm root launcher and platform package skeletons under `npm/`.
+- Initial npm distribution targets Windows x64 and macOS arm64.
 
 ## Not Complete Yet
 
@@ -101,7 +102,7 @@ The release workflow:
 
 ```text
 go test ./...
-build win/linux/darwin amd64/arm64 binaries
+build windows/amd64 and darwin/arm64 binaries
 write dist/checksums.txt
 node scripts/prepare-npm-packages.mjs X.Y.Z dist
 npm pack --dry-run for every package
@@ -109,6 +110,16 @@ npm publish platform packages first
 npm publish @lqw905/ebo last
 create GitHub Release with binaries and checksums
 ```
+
+The first npm release intentionally ships only:
+
+```text
+@lqw905/ebo
+@lqw905/ebo-win32-x64
+@lqw905/ebo-darwin-arm64
+```
+
+Other platforms can be added when there is demand.
 
 ## Prompt Boundary
 

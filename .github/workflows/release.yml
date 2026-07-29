@@ -42,9 +42,6 @@ jobs:
           mkdir -p dist
 
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "${ldflags}" -o dist/ebo-windows-amd64.exe ./cmd/ebo
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "${ldflags}" -o dist/ebo-linux-amd64 ./cmd/ebo
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "${ldflags}" -o dist/ebo-linux-arm64 ./cmd/ebo
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "${ldflags}" -o dist/ebo-darwin-amd64 ./cmd/ebo
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "${ldflags}" -o dist/ebo-darwin-arm64 ./cmd/ebo
 
           (cd dist && sha256sum * > checksums.txt)
@@ -60,9 +57,6 @@ jobs:
         run: |
           set -euo pipefail
           npm pack --dry-run ./npm/platforms/win32-x64
-          npm pack --dry-run ./npm/platforms/linux-x64
-          npm pack --dry-run ./npm/platforms/linux-arm64
-          npm pack --dry-run ./npm/platforms/darwin-x64
           npm pack --dry-run ./npm/platforms/darwin-arm64
           npm pack --dry-run ./npm/root
 
@@ -71,9 +65,6 @@ jobs:
         run: |
           set -euo pipefail
           npm publish ./npm/platforms/win32-x64 --access public --provenance
-          npm publish ./npm/platforms/linux-x64 --access public --provenance
-          npm publish ./npm/platforms/linux-arm64 --access public --provenance
-          npm publish ./npm/platforms/darwin-x64 --access public --provenance
           npm publish ./npm/platforms/darwin-arm64 --access public --provenance
 
       - name: Verify platform packages are visible
@@ -82,9 +73,6 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           npm view "@lqw905/ebo-win32-x64@${version}" version
-          npm view "@lqw905/ebo-linux-x64@${version}" version
-          npm view "@lqw905/ebo-linux-arm64@${version}" version
-          npm view "@lqw905/ebo-darwin-x64@${version}" version
           npm view "@lqw905/ebo-darwin-arm64@${version}" version
 
       - name: Publish root npm package

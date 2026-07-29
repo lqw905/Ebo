@@ -16,9 +16,6 @@
   ],
   "optionalDependencies": {
     "@lqw905/ebo-win32-x64": "0.1.0",
-    "@lqw905/ebo-linux-x64": "0.1.0",
-    "@lqw905/ebo-linux-arm64": "0.1.0",
-    "@lqw905/ebo-darwin-x64": "0.1.0",
     "@lqw905/ebo-darwin-arm64": "0.1.0"
   },
   "publishConfig": {

@@ -7,9 +7,6 @@ import path from "node:path";
 const root = readJSON("npm/root/package.json");
 const platforms = [
   ["win32-x64", "@lqw905/ebo-win32-x64"],
-  ["linux-x64", "@lqw905/ebo-linux-x64"],
-  ["linux-arm64", "@lqw905/ebo-linux-arm64"],
-  ["darwin-x64", "@lqw905/ebo-darwin-x64"],
   ["darwin-arm64", "@lqw905/ebo-darwin-arm64"]
 ];
 

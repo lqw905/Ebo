@@ -6,9 +6,6 @@ const path = require("node:path");
 
 const targets = {
   "win32-x64": { packageName: "@lqw905/ebo-win32-x64", binary: "bin/ebo.exe" },
-  "linux-x64": { packageName: "@lqw905/ebo-linux-x64", binary: "bin/ebo" },
-  "linux-arm64": { packageName: "@lqw905/ebo-linux-arm64", binary: "bin/ebo" },
-  "darwin-x64": { packageName: "@lqw905/ebo-darwin-x64", binary: "bin/ebo" },
   "darwin-arm64": { packageName: "@lqw905/ebo-darwin-arm64", binary: "bin/ebo" }
 };
 

@@ -20,24 +20,6 @@ const targets = [
     binary: "ebo.exe"
   },
   {
-    dir: "linux-x64",
-    packageName: "@lqw905/ebo-linux-x64",
-    artifact: "ebo-linux-amd64",
-    binary: "ebo"
-  },
-  {
-    dir: "linux-arm64",
-    packageName: "@lqw905/ebo-linux-arm64",
-    artifact: "ebo-linux-arm64",
-    binary: "ebo"
-  },
-  {
-    dir: "darwin-x64",
-    packageName: "@lqw905/ebo-darwin-x64",
-    artifact: "ebo-darwin-amd64",
-    binary: "ebo"
-  },
-  {
     dir: "darwin-arm64",
     packageName: "@lqw905/ebo-darwin-arm64",
     artifact: "ebo-darwin-arm64",
