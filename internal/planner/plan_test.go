@@ -1,6 +1,8 @@
 package planner
 
 import (
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/lqw905/Ebo/internal/project"
@@ -15,6 +17,7 @@ func TestCreatePlanOrdersDependenciesFirst(t *testing.T) {
 	writePrompt(t, root, project.RootID, rootPrompt)
 	writePrompt(t, root, "architecture.identity", identityPrompt)
 	writePrompt(t, root, "feature.login", loginPrompt)
+	commitBaseline(t, root)
 
 	promptTree, err := tree.LoadProject(root)
 	if err != nil {
@@ -29,6 +32,68 @@ func TestCreatePlanOrdersDependenciesFirst(t *testing.T) {
 	}
 	if plan.Order[0] != "architecture.identity" || plan.Order[1] != "feature.login" {
 		t.Fatalf("order = %#v", plan.Order)
+	}
+}
+
+func TestCreatePlanRequiresGitBaseline(t *testing.T) {
+	root := t.TempDir()
+	if err := project.EnsureLayout(root); err != nil {
+		t.Fatal(err)
+	}
+	writePrompt(t, root, project.RootID, rootPrompt)
+	writePrompt(t, root, "architecture.identity", identityPrompt)
+	writePrompt(t, root, "feature.login", loginPrompt)
+	promptTree, err := tree.LoadProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(root, promptTree, ""); err == nil || !strings.Contains(err.Error(), "git baseline is missing") {
+		t.Fatalf("Create error = %v, want git baseline error", err)
+	}
+}
+
+func TestStartTaskRequiresExplicitRunningTransition(t *testing.T) {
+	plan := &Plan{
+		Status: "planned",
+		Tasks:  []Task{{ID: "feature.login", PromptID: "feature.login", Status: "pending"}},
+	}
+	task, err := StartTask(plan, "feature.login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "running" || plan.Status != "running" {
+		t.Fatalf("task/plan status = %s/%s, want running/running", task.Status, plan.Status)
+	}
+	if NextTask(plan) != task {
+		t.Fatal("running task should remain the next task")
+	}
+}
+
+func TestReportRejectsTaskThatWasNotStarted(t *testing.T) {
+	root := t.TempDir()
+	plan := &Plan{
+		ID:     "plan-1",
+		Status: "planned",
+		Tasks:  []Task{{ID: "feature.login", PromptID: "feature.login", Status: "pending"}},
+	}
+	if _, err := Report(root, plan, "feature.login", "passed", ""); err == nil || !strings.Contains(err.Error(), "run ebo next") {
+		t.Fatalf("Report error = %v, want next requirement", err)
+	}
+}
+
+func commitBaseline(t *testing.T, root string) {
+	t.Helper()
+	commands := [][]string{
+		{"init"},
+		{"add", "-A"},
+		{"-c", "user.name=Ebo Test", "-c", "user.email=ebo@example.invalid", "commit", "-m", "baseline"},
+	}
+	for _, args := range commands {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, output)
+		}
 	}
 }
 

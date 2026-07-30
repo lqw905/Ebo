@@ -84,6 +84,10 @@ ebo abort <plan-id>
 ebo commit <plan-id> --dry-run
 ebo import . --out .ebo/runtime/import
 ebo lock status
+ebo guard check
+ebo guard check --staged
+ebo hooks install
+ebo hooks status
 ```
 
 `approve` intentionally requires an interactive terminal and a `[y/N]` confirmation. Ebo binds the full proposal hash internally and verifies it again during `apply`, so users do not need to copy a SHA-256 value while changed content is still rejected.
@@ -104,6 +108,10 @@ ebo lock status
 - Plan-based `next`, `export`, `report`, `verify`, and `abort`.
 - `report passed|failed|blocked` writes execution state back to `.ebo/tree/` when the plan hashes still match.
 - Project-level lock file at `.ebo/locks/project.lock` for mutating commands.
+- Fail-closed execution gate with one ignored `.ebo/runtime/active-task.json` lease.
+- Git baseline enforcement before planning or execution.
+- `ebo guard check` for working-tree authorization and staged-plan validation.
+- Optional managed pre-commit hook installed with `ebo hooks install`.
 - Conservative `commit` orchestration for completed plans.
 - Basic evidence package export for reverse import workflows.
 - npm root launcher and platform package skeletons under `npm/`.

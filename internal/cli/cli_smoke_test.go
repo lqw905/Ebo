@@ -38,27 +38,88 @@ func TestCLISmoke(t *testing.T) {
 	writePrompt(t, root, project.RootID, rootPrompt)
 	writePrompt(t, root, "architecture.identity", identityPrompt)
 	writePrompt(t, root, "feature.login", loginPrompt)
+	commitAll(t, root, "baseline")
 
 	planOutput := runCLI(t, nil, "plan")
 	planID := regexp.MustCompile(`created (plan-[^\s]+)`).FindStringSubmatch(planOutput)
 	if len(planID) != 2 {
 		t.Fatalf("could not parse plan id from:\n%s", planOutput)
 	}
+	exportOutput := runCLI(t, nil, "export", planID[1], "--format", "markdown")
+	if strings.Contains(exportOutput, "source_edit: allowed") || !strings.Contains(exportOutput, "不授予源码修改权限") {
+		t.Fatalf("export must not grant execution permission: %s", exportOutput)
+	}
+	preexisting := filepath.Join(root, "preexisting.txt")
+	if err := os.WriteFile(preexisting, []byte("not authorized yet\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	preexistingOutput, preexistingCode := runCLIResult(nil, "next", planID[1])
+	if preexistingCode == 0 || !strings.Contains(preexistingOutput, "reason: preexisting_source_changes") {
+		t.Fatalf("next must reject source edits made before authorization, code=%d output=%s", preexistingCode, preexistingOutput)
+	}
+	if err := os.Remove(preexisting); err != nil {
+		t.Fatal(err)
+	}
 
 	nextOutput := runCLI(t, nil, "next", planID[1])
 	if !strings.Contains(nextOutput, "architecture.identity") {
 		t.Fatalf("next output = %s", nextOutput)
 	}
+	if !strings.Contains(nextOutput, "EBO EXECUTION GATE: OPEN") {
+		t.Fatalf("next did not open execution gate: %s", nextOutput)
+	}
+	activePath := filepath.Join(root, ".ebo", "runtime", "active-task.json")
+	if _, err := os.Stat(activePath); err != nil {
+		t.Fatalf("active task was not created: %v", err)
+	}
+	repeatedNext := runCLI(t, nil, "next")
+	if !strings.Contains(repeatedNext, "architecture.identity") || !strings.Contains(repeatedNext, "EBO EXECUTION GATE: OPEN") {
+		t.Fatalf("repeated next should resume the active task: %s", repeatedNext)
+	}
+	implementation := filepath.Join(root, "implementation.txt")
+	if err := os.WriteFile(implementation, []byte("done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	openGuard := runCLI(t, nil, "guard", "check")
+	if !strings.Contains(openGuard, "guard: pass") || !strings.Contains(openGuard, "EBO EXECUTION GATE: OPEN") {
+		t.Fatalf("guard should allow source edits for active task: %s", openGuard)
+	}
 
-	runCLI(t, nil, "report", "architecture.identity", "--plan", planID[1], "--result", "passed", "--note", "smoke")
+	runCLI(t, nil, "report", "architecture.identity", "--plan", planID[1], "--result", "failed", "--note", "retry smoke")
+	if _, err := os.Stat(activePath); !os.IsNotExist(err) {
+		t.Fatalf("active task should be cleared after report, stat err=%v", err)
+	}
+	retryNext := runCLI(t, nil, "next", planID[1])
+	if !strings.Contains(retryNext, "architecture.identity") || !strings.Contains(retryNext, "EBO EXECUTION GATE: OPEN") {
+		t.Fatalf("failed task should reopen for retry: %s", retryNext)
+	}
+	runCLI(t, nil, "report", "architecture.identity", "--plan", planID[1], "--result", "passed", "--note", "retry passed")
+	secondNext := runCLI(t, nil, "next", planID[1])
+	if !strings.Contains(secondNext, "feature.login") || !strings.Contains(secondNext, "EBO EXECUTION GATE: OPEN") {
+		t.Fatalf("second next output = %s", secondNext)
+	}
 	runCLI(t, nil, "report", "feature.login", "--plan", planID[1], "--result", "passed", "--note", "smoke")
 	verifyOutput := runCLI(t, nil, "verify", planID[1])
 	if !strings.Contains(verifyOutput, "status=completed") {
 		t.Fatalf("verify output = %s", verifyOutput)
 	}
 	scanOutput := runCLI(t, nil, "scan")
-	if !strings.Contains(scanOutput, "dirty tasks: 0") {
+	if !strings.Contains(scanOutput, "dirty tasks: 0") || !strings.Contains(scanOutput, "EBO EXECUTION GATE: CLOSED") {
 		t.Fatalf("scan output = %s", scanOutput)
+	}
+	nextEmpty := runCLI(t, nil, "next")
+	if !strings.Contains(nextEmpty, "reason: no_executable_task") || !strings.Contains(nextEmpty, "source_edit: forbidden") {
+		t.Fatalf("empty next output = %s", nextEmpty)
+	}
+
+	guardOutput, guardError := runCLIResult(nil, "guard", "check")
+	if guardError == 0 || !strings.Contains(guardOutput, "unauthorized_source_changes") {
+		t.Fatalf("guard should reject source changes without active task, code=%d output=%s", guardError, guardOutput)
+	}
+	gitAddAll(t, root)
+	stagedGuard := runCLI(t, nil, "guard", "check", "--staged")
+	if !strings.Contains(stagedGuard, "guard: pass") || !strings.Contains(stagedGuard, planID[1]) {
+		t.Fatalf("staged guard output = %s", stagedGuard)
 	}
 }
 
@@ -110,11 +171,18 @@ func TestInitIsolatesEboAndInstallsAgentWorkflow(t *testing.T) {
 	if !strings.Contains(string(configData), `workflow_file = ".ebo/WORKFLOW.md"`) {
 		t.Fatalf("config does not declare workflow file:\n%s", configData)
 	}
+	gitignoreData, err := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gitignoreData), ".ebo/runtime/active-task.json") {
+		t.Fatalf(".gitignore does not ignore active task:\n%s", gitignoreData)
+	}
 	agentData, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{".ebo/WORKFLOW.md", "只执行 ebo next 返回的单个任务", "Agent 不得执行"} {
+	for _, want := range []string{".ebo/WORKFLOW.md", "EBO HARD GATE: NO EBO TASK, NO SOURCE EDIT", "只有 ebo next 返回 EBO EXECUTION GATE: OPEN", "Agent 不得执行"} {
 		if !strings.Contains(string(agentData), want) {
 			t.Fatalf("AGENTS.md does not contain %q:\n%s", want, agentData)
 		}
@@ -125,6 +193,7 @@ func TestInitIsolatesEboAndInstallsAgentWorkflow(t *testing.T) {
 	}
 	for _, want := range []string{
 		"# Ebo 项目使用说明",
+		"## 0. 最高优先级执行门禁",
 		"## 2. Prompt 标记与执行资格",
 		"## 4. 执行下一个 Prompt",
 		"输入给 Agent",
@@ -136,6 +205,73 @@ func TestInitIsolatesEboAndInstallsAgentWorkflow(t *testing.T) {
 		if !strings.Contains(string(workflowData), want) {
 			t.Fatalf("WORKFLOW.md does not contain %q:\n%s", want, workflowData)
 		}
+	}
+}
+
+func TestNextRejectsPlanAfterGitHeadChanges(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+	root := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+
+	git := exec.Command("git", "init")
+	git.Dir = root
+	if output, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, output)
+	}
+	runCLI(t, nil, "init", "--agents", "none")
+	writePrompt(t, root, project.RootID, rootPrompt)
+	writePrompt(t, root, "architecture.identity", identityPrompt)
+	commitAll(t, root, "baseline")
+	planOutput := runCLI(t, nil, "plan")
+	match := regexp.MustCompile(`created (plan-[^\s]+)`).FindStringSubmatch(planOutput)
+	if len(match) != 2 {
+		t.Fatalf("could not parse plan id from %s", planOutput)
+	}
+	if err := os.WriteFile(filepath.Join(root, "head-change.txt"), []byte("change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, root, "change head")
+	output, code := runCLIResult(nil, "next", match[1])
+	if code == 0 || !strings.Contains(output, "reason: plan_base_commit_changed") {
+		t.Fatalf("next should reject stale plan, code=%d output=%s", code, output)
+	}
+}
+
+func runCLIResult(in *bytes.Buffer, args ...string) (string, int) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if in == nil {
+		in = &bytes.Buffer{}
+	}
+	code := Execute(args, in, &stdout, &stderr)
+	return stdout.String() + stderr.String(), code
+}
+
+func commitAll(t *testing.T, root, message string) {
+	t.Helper()
+	gitAddAll(t, root)
+	cmd := exec.Command("git", "-c", "user.name=Ebo Test", "-c", "user.email=ebo@example.invalid", "commit", "-m", message)
+	cmd.Dir = root
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit failed: %v\n%s", err, output)
+	}
+}
+
+func gitAddAll(t *testing.T, root string) {
+	t.Helper()
+	cmd := exec.Command("git", "add", "-A")
+	cmd.Dir = root
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add failed: %v\n%s", err, output)
 	}
 }
 

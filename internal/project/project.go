@@ -29,6 +29,7 @@ type Paths struct {
 	PlansDir     string
 	ReceiptsDir  string
 	RuntimeDir   string
+	ActiveTask   string
 	CacheDir     string
 	LocksDir     string
 	TmpDir       string
@@ -46,6 +47,7 @@ func NewPaths(root string) Paths {
 		PlansDir:     filepath.Join(ebo, "plans"),
 		ReceiptsDir:  filepath.Join(ebo, "receipts"),
 		RuntimeDir:   filepath.Join(ebo, "runtime"),
+		ActiveTask:   filepath.Join(ebo, "runtime", "active-task.json"),
 		CacheDir:     filepath.Join(ebo, "cache"),
 		LocksDir:     filepath.Join(ebo, "locks"),
 		TmpDir:       filepath.Join(ebo, "tmp"),

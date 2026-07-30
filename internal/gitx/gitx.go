@@ -3,6 +3,7 @@ package gitx
 import (
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
@@ -44,6 +45,46 @@ func CachedNames(root string) ([]string, error) {
 	return nonEmptyLines(output), nil
 }
 
+func ChangedNames(root string) ([]string, error) {
+	commands := [][]string{
+		{"diff", "--name-only"},
+		{"diff", "--cached", "--name-only"},
+		{"ls-files", "--others", "--exclude-standard"},
+	}
+	seen := map[string]bool{}
+	for _, args := range commands {
+		output, err := run(root, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range nonEmptyLines(output) {
+			seen[normalizePath(name)] = true
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func GitPath(root, name string) (string, error) {
+	output, err := run(root, "rev-parse", "--git-path", name)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(output), nil
+}
+
+func IndexFile(root, path string) ([]byte, error) {
+	output, err := run(root, "show", ":"+normalizePath(path))
+	if err != nil {
+		return nil, err
+	}
+	return []byte(output), nil
+}
+
 func Commit(root, message string) error {
 	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("commit message is required")
@@ -74,4 +115,8 @@ func nonEmptyLines(output string) []string {
 		}
 	}
 	return lines
+}
+
+func normalizePath(path string) string {
+	return strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
 }

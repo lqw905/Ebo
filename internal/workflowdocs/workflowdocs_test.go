@@ -23,12 +23,15 @@ func TestUpdateCreatesChineseWorkflow(t *testing.T) {
 	text := string(data)
 	for _, want := range []string{
 		"# Ebo 项目使用说明",
+		"EBO HARD GATE: NO EBO TASK, NO SOURCE EDIT",
 		"每个 Prompt Markdown 都必须",
 		"输入给 Agent",
-		"只执行 ebo next 返回的单个任务",
+		"只有 `ebo next` 输出 `EBO EXECUTION GATE: OPEN`",
+		"ebo guard check",
+		"ebo commit` 本身也会执行同等校验",
 		"ebo context <prompt-id> --depth 0",
 		"## 5. 将对话沉淀为 Prompt 树",
-		"只有用户明确要求",
+		"直接提出新的代码变更，而当前没有 OPEN 任务",
 		"ebo add --dry-run --dir drafts/ebo/<topic>/",
 		"Agent 创建 proposal 后必须停止",
 		"人工审阅并加入 Prompt 树",

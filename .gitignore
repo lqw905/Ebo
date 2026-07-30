@@ -9,3 +9,4 @@ coverage.out
 .ebo/tmp/
 .ebo/runtime/sessions/
 .ebo/runtime/logs/
+.ebo/runtime/active-task.json

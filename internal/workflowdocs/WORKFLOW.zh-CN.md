@@ -4,13 +4,31 @@
 > 此区块由 Ebo 管理。文档版本：`ebo.workflow/v1`。
 > 可以在受管区块之外补充项目规则；再次运行 `ebo init` 时，区块之外的内容会被保留。
 
+## 0. 最高优先级执行门禁
+
+```text
+EBO HARD GATE: NO EBO TASK, NO SOURCE EDIT.
+没有 Ebo 任务，就不能修改业务代码。
+```
+
+- `ebo scan` 只显示候选任务，永远不授予代码修改权限。
+- 只有 `ebo next` 输出 `EBO EXECUTION GATE: OPEN` 时，Agent 才能修改业务代码。
+- `.ebo/runtime/active-task.json` 记录当前唯一活动任务；`ebo report` 完成后门禁立即关闭。
+- `ebo next` 输出 `CLOSED` 或没有任务时，Agent 必须停止业务代码修改。
+- 此时如果用户提出代码变更，视为授权 Agent 生成草稿并运行 `ebo add` 创建 proposal，但不代表授权 `approve` 或 `apply`。
+- proposal 创建后 Agent 必须停止，等用户人工审批和应用；再次获得 `OPEN` 后才能实现。
+- 修改代码前运行 `ebo guard check`，结果不是 `guard: pass` 和 `OPEN` 时不得继续。
+
 ## 1. Ebo 的职责边界
 
 - `.ebo/tree/` 是项目唯一、受 Git 版本控制的 Prompt 树，不在业务代码目录散放正式 Prompt。
 - Ebo 不调用 AI，也不生成或执行代码；Agent 负责生成 Prompt 和实现代码，Ebo 负责收录、审批、计算状态和调度。
 - Agent 不得直接修改 `.ebo/tree/` 中的 Prompt、状态或哈希。
+- Agent 不得手工伪造或修改 `.ebo/plans/`、`.ebo/receipts/` 和 `.ebo/runtime/active-task.json`；这些控制状态只能由 Ebo 命令写入。
 - 新建或修改 Prompt 必须先成为 proposal，并经过人工 `review`、`approve` 和 `apply`。
 - Agent 不得运行 `ebo approve` 或 `ebo apply`。
+- Prompt 树执行依赖 Git 基线；没有至少一个 Git commit 时，`ebo plan` 和 `ebo next` 会拒绝执行。
+- 全新 plan 第一次执行前必须没有既存业务代码改动；否则 `ebo next` 会以 `preexisting_source_changes` 关闭门禁，防止先改代码再补任务。
 
 ## 2. Prompt 标记与执行资格
 
@@ -33,7 +51,9 @@ hash:
 | 内容哈希或依赖哈希发生变化 | 标记为需要重新执行 |
 | `execution: failed` 或 `blocked` | 依赖就绪时允许重试 |
 | 存在尚未满足且未审批的依赖，或其他未就绪依赖 | 当前 Prompt 暂不执行 |
-| `ebo next` 没有返回任务 | 立即停止，不读取其他 Prompt 文件 |
+| `ebo scan` 返回任务 | 仅供查看，门禁仍为 CLOSED |
+| `ebo next` 返回 OPEN | 获得一个活动任务，可以修改业务代码 |
+| `ebo next` 返回 CLOSED | 立即停止，不读取或修改业务代码 |
 
 执行资格由 Ebo 计算。Agent 不得通过遍历 `.ebo/tree/` 自行判断任务，也不得预加载无关分支。任何时候都只执行 `ebo next` 返回的一个任务。
 
@@ -43,6 +63,22 @@ hash:
 
 ```bash
 ebo init --agents codex,claude
+```
+
+检查初始化文件并创建 Git 基线；Ebo 不会代替用户提交业务文件：
+
+```bash
+git status
+git add .ebo .gitignore AGENTS.md CLAUDE.md
+git commit -m "chore: initialize ebo"
+ebo doctor
+```
+
+需要阻止绕过 Ebo 的 Git 提交时，可选择安装受管 pre-commit hook：
+
+```bash
+ebo hooks install
+ebo hooks status
 ```
 
 然后输入给 Agent：
@@ -60,7 +96,8 @@ ebo init --agents codex,claude
 请根据 Ebo 执行当前项目的下一个任务。
 
 先运行 ebo status、ebo scan 和 ebo next。
-只执行 ebo next 返回的单个任务，不要遍历或加载整个 Prompt 树。
+注意 ebo scan 不授予执行权限。只有 ebo next 返回 EBO EXECUTION GATE: OPEN 后，才能执行它返回的单个任务。
+随后运行 ebo guard check；结果不是 OPEN 时立即停止。
 选中任务后运行 ebo context <prompt-id> --depth 0，只读取当前 Prompt 和直接语义链接。
 完成后使用任务包给出的 ebo report 命令报告结果，并运行 ebo verify <plan-id>。
 ```
@@ -71,12 +108,13 @@ Agent 应依次运行：
 ebo status
 ebo scan
 ebo next
+ebo guard check
 ebo context <prompt-id> --depth 0
 ```
 
 ## 5. 将对话沉淀为 Prompt 树
 
-用户可以先与 Agent 自由讨论需求、方案和边界。讨论内容不会自动进入 Prompt 树；只有用户明确要求“沉淀到 Ebo”或“更新 Prompt 树”时，Agent 才能创建草稿并运行 `ebo add`。
+用户可以先与 Agent 自由讨论需求、方案和边界。讨论内容不会自动进入 Prompt 树。当用户明确要求“沉淀到 Ebo”“更新 Prompt 树”或直接提出新的代码变更，而当前没有 OPEN 任务时，Agent 可以创建草稿并运行 `ebo add`，但不能修改业务代码。
 
 讨论完成后，输入给 Agent：
 
@@ -239,9 +277,25 @@ ebo import . --out .ebo/runtime/import
 ebo commit <plan-id> --dry-run
 ```
 
-确认业务代码已经正确暂存后，再运行：
+先暂存本计划产生的业务代码。`ebo commit` 会自动暂存对应的 Prompt 树、plan 和 receipt，并在真正提交前执行 staged guard：
+
+```bash
+git add <本计划修改的业务文件>
+ebo commit <plan-id> --dry-run
+```
+
+确认后提交：
 
 ```bash
 ebo commit <plan-id> --message "<提交说明>"
 ```
+
+如果希望在提交前单独运行 staged guard，需要先把控制文件也暂存：
+
+```bash
+git add <本计划修改的业务文件> .ebo/tree .ebo/plans/<plan-id>.json .ebo/receipts
+ebo guard check --staged
+```
+
+可选 pre-commit hook 会阻止直接运行 `git commit` 绕过这项检查；即使没有安装 hook，`ebo commit` 本身也会执行同等校验。
 <!-- EBO:WORKFLOW:END -->

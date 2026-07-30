@@ -85,8 +85,12 @@ func Create(root string, promptTree *tree.Tree, rootNode string) (*Plan, error) 
 			EffectiveHash: node.EffectiveHash,
 		})
 	}
+	baseCommit := gitx.Head(root)
+	if baseCommit == "" {
+		return nil, fmt.Errorf("git baseline is missing; commit the initialized project before creating an execution plan")
+	}
 	now := time.Now().UTC()
-	hash := planHash(rootNode, nodes, gitx.Head(root))
+	hash := planHash(rootNode, nodes, baseCommit)
 	id := fmt.Sprintf("plan-%s-%s", now.Format("20060102-150405"), document.ShortHash(hash, 8))
 	status := "planned"
 	if len(tasks) == 0 {
@@ -99,7 +103,7 @@ func Create(root string, promptTree *tree.Tree, rootNode string) (*Plan, error) 
 		Status:     status,
 		CreatedAt:  now.Format(time.RFC3339),
 		UpdatedAt:  now.Format(time.RFC3339),
-		BaseCommit: gitx.Head(root),
+		BaseCommit: baseCommit,
 		Nodes:      nodes,
 		Order:      append([]string{}, order...),
 		Tasks:      tasks,
@@ -172,11 +176,36 @@ func LatestActive(root string) (*Plan, error) {
 
 func NextTask(plan *Plan) *Task {
 	for i := range plan.Tasks {
+		if plan.Tasks[i].Status == "running" {
+			return &plan.Tasks[i]
+		}
+	}
+	for i := range plan.Tasks {
 		if plan.Tasks[i].Status == "pending" || plan.Tasks[i].Status == "failed" || plan.Tasks[i].Status == "blocked" {
 			return &plan.Tasks[i]
 		}
 	}
 	return nil
+}
+
+func StartTask(plan *Plan, taskID string) (*Task, error) {
+	task, err := FindTask(plan, taskID)
+	if err != nil {
+		return nil, err
+	}
+	switch task.Status {
+	case "running":
+		plan.Status = "running"
+		return task, nil
+	case "pending", "failed", "blocked":
+		task.Status = "running"
+		task.Result = ""
+		task.ReportedAt = ""
+		plan.Status = "running"
+		return task, nil
+	default:
+		return nil, fmt.Errorf("task %s is %s and cannot be started", task.ID, task.Status)
+	}
 }
 
 func FindTask(plan *Plan, taskID string) (*Task, error) {
@@ -193,6 +222,9 @@ func Report(root string, plan *Plan, taskID, result, note string) (*Task, error)
 	if err != nil {
 		return nil, err
 	}
+	if task.Status != "running" {
+		return nil, fmt.Errorf("task %s is %s; run ebo next before reporting it", task.ID, task.Status)
+	}
 	task.Status = result
 	task.Result = result
 	task.Note = note
@@ -202,6 +234,18 @@ func Report(root string, plan *Plan, taskID, result, note string) (*Task, error)
 		return nil, err
 	}
 	return task, nil
+}
+
+func Abort(plan *Plan) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range plan.Tasks {
+		if plan.Tasks[i].Status == "running" {
+			plan.Tasks[i].Status = "aborted"
+			plan.Tasks[i].Result = "aborted"
+			plan.Tasks[i].ReportedAt = now
+		}
+	}
+	plan.Status = "aborted"
 }
 
 func Path(root, id string) string {
@@ -239,6 +283,15 @@ func TaskPackage(plan *Plan, prompt *document.Prompt, task *Task) string {
 	return b.String()
 }
 
+func AuthorizedTaskPackage(plan *Plan, prompt *document.Prompt, task *Task) string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "EBO EXECUTION GATE: OPEN")
+	fmt.Fprintln(&b, "source_edit: allowed")
+	fmt.Fprintf(&b, "plan: %s\ntask: %s\nprompt: %s\n\n", plan.ID, task.ID, task.PromptID)
+	b.WriteString(TaskPackage(plan, prompt, task))
+	return b.String()
+}
+
 func planHash(rootNode string, nodes []Node, baseCommit string) string {
 	payload := struct {
 		Schema     string `json:"schema"`
@@ -262,11 +315,12 @@ func statusFromTasks(tasks []Task) string {
 	allPassed := true
 	for _, task := range tasks {
 		switch task.Status {
+		case "passed":
 		case "failed":
 			return "failed"
 		case "blocked":
 			return "blocked"
-		case "pending":
+		default:
 			allPassed = false
 		}
 	}

@@ -24,7 +24,11 @@ func TestUpdateCreatesExecutionProtocol(t *testing.T) {
 	for _, want := range []string{
 		"此区块由 Ebo 管理",
 		"必须先完整阅读并遵守 .ebo/WORKFLOW.md",
-		"只执行 ebo next 返回的单个任务",
+		"EBO HARD GATE: NO EBO TASK, NO SOURCE EDIT",
+		"ebo scan 仅用于查看，永远不授予代码修改权限",
+		"只有 ebo next 返回 EBO EXECUTION GATE: OPEN",
+		"只有同时返回 guard: pass 和 EBO EXECUTION GATE: OPEN",
+		"只能生成 Prompt 草稿、运行 ebo add 创建 proposal",
 		"不得遍历整个 .ebo/tree/",
 		"Agent 不得执行",
 	} {

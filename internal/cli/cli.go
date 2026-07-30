@@ -17,6 +17,8 @@ import (
 
 	"github.com/lqw905/Ebo/internal/agentdocs"
 	"github.com/lqw905/Ebo/internal/document"
+	"github.com/lqw905/Ebo/internal/execution"
+	"github.com/lqw905/Ebo/internal/githooks"
 	"github.com/lqw905/Ebo/internal/gitx"
 	"github.com/lqw905/Ebo/internal/lockfile"
 	"github.com/lqw905/Ebo/internal/planner"
@@ -85,6 +87,10 @@ func Execute(args []string, in io.Reader, out, errOut io.Writer) int {
 		err = runImport(args[1:], out)
 	case "commit":
 		err = runCommit(args[1:], out)
+	case "guard":
+		err = runGuard(args[1:], out)
+	case "hooks":
+		err = runHooks(args[1:], out)
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}
@@ -111,8 +117,10 @@ Usage:
   ebo plan show <plan-id>
   ebo next [plan-id]
   ebo export <plan-id> [--format markdown|json]
-  ebo report <task-id> [--plan <plan-id>] --result passed|failed [--note "..."]
+  ebo report <task-id> [--plan <plan-id>] --result passed|failed|blocked [--note "..."]
   ebo commit <plan-id> [--dry-run] [--message "..."]
+  ebo guard check [--staged]
+  ebo hooks (install | status)
   ebo import <path> [--out <dir>] [--dry-run]
   ebo lock status
   ebo doctor
@@ -213,6 +221,7 @@ func runDoctor(args []string, out io.Writer) error {
 	check(dirExists(paths.TreeDir), "tree directory", paths.TreeDir)
 	check(dirExists(paths.ProposalsDir), "proposal directory", paths.ProposalsDir)
 	check(gitInside(root), "git repository", "not inside a Git work tree")
+	check(gitx.Head(root) != "", "git baseline", "create an initial commit before ebo plan or ebo next")
 
 	t, err := tree.LoadProject(root)
 	if err != nil {
@@ -225,10 +234,23 @@ func runDoctor(args []string, out io.Writer) error {
 			fmt.Fprintln(out, "  -", issue)
 		}
 	}
+	if active, activeErr := execution.Load(root); activeErr == nil {
+		_, _, validationErr := validateActiveTask(root, active)
+		check(validationErr == nil, "active task", errorDetail(validationErr))
+	} else if errors.Is(activeErr, execution.ErrNoActiveTask) {
+		check(true, "active task", "")
+	} else {
+		check(false, "active task", activeErr.Error())
+	}
 	if containsManagedBlock(filepath.Join(root, "AGENTS.md")) {
 		fmt.Fprintln(out, "ok   AGENTS.md managed block")
 	} else {
 		fmt.Fprintln(out, "warn AGENTS.md has no Ebo managed block")
+	}
+	if githooks.Installed(root) {
+		fmt.Fprintln(out, "ok   Ebo pre-commit hook")
+	} else {
+		fmt.Fprintln(out, "warn Ebo pre-commit hook is not installed (optional: ebo hooks install)")
 	}
 	if info, err := lockfile.Read(root); err == nil {
 		fmt.Fprintf(out, "warn project lock exists: pid=%d command=%q since %s\n", info.PID, info.Command, info.CreatedAt)
@@ -553,6 +575,17 @@ func runStatus(args []string, out io.Writer) error {
 		planCounts[item.Status]++
 	}
 	fmt.Fprintf(out, "plans: planned=%d running=%d completed=%d failed=%d blocked=%d aborted=%d empty=%d\n", planCounts["planned"], planCounts["running"], planCounts["completed"], planCounts["failed"], planCounts["blocked"], planCounts["aborted"], planCounts["empty"])
+	if active, activeErr := execution.Load(root); activeErr == nil {
+		if _, _, validationErr := validateActiveTask(root, active); validationErr != nil {
+			fmt.Fprintf(out, "gate: invalid (%v)\n", validationErr)
+		} else {
+			fmt.Fprintf(out, "gate: open plan=%s task=%s prompt=%s\n", active.PlanID, active.TaskID, active.PromptID)
+		}
+	} else if errors.Is(activeErr, execution.ErrNoActiveTask) {
+		fmt.Fprintln(out, "gate: closed")
+	} else {
+		fmt.Fprintf(out, "gate: invalid (%v)\n", activeErr)
+	}
 	return nil
 }
 
@@ -777,6 +810,11 @@ func runScan(args []string, out io.Writer) error {
 	for i, id := range order {
 		fmt.Fprintf(out, "%d. %s  %s\n", i+1, id, t.Nodes[id].Title)
 	}
+	if len(order) == 0 {
+		printGateClosed(out, "no_executable_task", "create a Prompt proposal and wait for human approval")
+	} else {
+		printGateClosed(out, "scan_is_informational", "run ebo next to request execution authorization")
+	}
 	return nil
 }
 
@@ -853,6 +891,10 @@ func runNext(args []string, out io.Writer) error {
 		return err
 	}
 	return withProjectLock(root, "next", func() error {
+		if gitx.Head(root) == "" {
+			printGateClosed(out, "git_baseline_missing", "commit the initialized project before requesting a task")
+			return fmt.Errorf("git baseline is missing")
+		}
 		t, err := tree.LoadProject(root)
 		if err != nil {
 			return err
@@ -860,6 +902,27 @@ func runNext(args []string, out io.Writer) error {
 		if issues := t.Validate(); len(issues) > 0 {
 			return fmt.Errorf("tree invalid: %s", strings.Join(issues, "; "))
 		}
+		if active, activeErr := execution.Load(root); activeErr == nil {
+			plan, task, err := validateActiveTask(root, active)
+			if err != nil {
+				printGateClosed(out, "active_task_invalid", "resolve the active task state before editing source code")
+				return err
+			}
+			if len(args) == 1 && args[0] != plan.ID {
+				return fmt.Errorf("active task belongs to plan %s, not %s", plan.ID, args[0])
+			}
+			node := t.Nodes[task.PromptID]
+			if err := validateTaskPrompt(t, node, task); err != nil {
+				printGateClosed(out, "prompt_changed_after_task_start", "abort or report the active task before continuing")
+				return err
+			}
+			fmt.Fprint(out, planner.AuthorizedTaskPackage(plan, node, task))
+			return nil
+		} else if !errors.Is(activeErr, execution.ErrNoActiveTask) {
+			printGateClosed(out, "active_task_unreadable", "inspect the runtime state, then run ebo abort <plan-id> to recover")
+			return activeErr
+		}
+
 		var plan *planner.Plan
 		if len(args) == 1 {
 			plan, err = planner.Load(root, args[0])
@@ -878,22 +941,54 @@ func runNext(args []string, out io.Writer) error {
 				}
 			}
 		}
+		if plan.Status == "aborted" {
+			printGateClosed(out, "plan_aborted", "create a new plan after an approved Prompt change")
+			return fmt.Errorf("plan %s is aborted", plan.ID)
+		}
 		task := planner.NextTask(plan)
 		if task == nil {
-			fmt.Fprintln(out, "no dirty tasks")
+			printGateClosed(out, "no_executable_task", "create a Prompt proposal and wait for human approval")
 			return nil
 		}
+		if plan.BaseCommit != gitx.Head(root) {
+			printGateClosed(out, "plan_base_commit_changed", "create a new plan from the current Git HEAD")
+			return fmt.Errorf("plan %s is based on %s but HEAD is %s", plan.ID, plan.BaseCommit, gitx.Head(root))
+		}
 		if plan.Status == "planned" {
-			plan.Status = "running"
-			if err := planner.Save(root, plan); err != nil {
+			changed, err := gitx.ChangedNames(root)
+			if err != nil {
 				return err
+			}
+			if sourceNames := sourceChangeNames(changed); len(sourceNames) > 0 {
+				printGateClosed(out, "preexisting_source_changes", "reconcile or commit existing source changes before starting the plan")
+				for _, name := range sourceNames {
+					fmt.Fprintf(out, "- %s\n", name)
+				}
+				return fmt.Errorf("%d source change(s) predate the first authorized task", len(sourceNames))
 			}
 		}
 		node := t.Nodes[task.PromptID]
-		if node == nil {
-			return fmt.Errorf("prompt %s from plan %s not found", task.PromptID, plan.ID)
+		if err := validateTaskPrompt(t, node, task); err != nil {
+			printGateClosed(out, "plan_prompt_changed", "create a new plan for the current Prompt hashes")
+			return err
 		}
-		fmt.Fprint(out, planner.TaskPackage(plan, node, task))
+		oldTaskStatus := task.Status
+		oldPlanStatus := plan.Status
+		task, err = planner.StartTask(plan, task.ID)
+		if err != nil {
+			return err
+		}
+		if err := planner.Save(root, plan); err != nil {
+			return err
+		}
+		active := execution.New(plan.ID, task.ID, task.PromptID, task.ContentHash, task.EffectiveHash, plan.BaseCommit)
+		if err := execution.Save(root, active); err != nil {
+			task.Status = oldTaskStatus
+			plan.Status = oldPlanStatus
+			_ = planner.Save(root, plan)
+			return err
+		}
+		fmt.Fprint(out, planner.AuthorizedTaskPackage(plan, node, task))
 		return nil
 	})
 }
@@ -926,6 +1021,8 @@ func runExport(args []string, out io.Writer) error {
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "# Ebo Plan %s\n\n", plan.ID)
+		fmt.Fprintln(&b, "> 该文件仅用于查看或传递计划，不授予源码修改权限。执行前必须运行 `ebo next` 并取得 `EBO EXECUTION GATE: OPEN`。")
+		fmt.Fprintln(&b)
 		for i := range plan.Tasks {
 			task := &plan.Tasks[i]
 			node := t.Nodes[task.PromptID]
@@ -954,7 +1051,7 @@ func runExport(args []string, out io.Writer) error {
 
 func runReport(args []string, out io.Writer) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: ebo report <task-id> [--plan <plan-id>] --result passed|failed [--note \"...\"]")
+		return fmt.Errorf("usage: ebo report <task-id> [--plan <plan-id>] --result passed|failed|blocked [--note \"...\"]")
 	}
 	taskID := args[0]
 	result := valueFlag(args[1:], "result")
@@ -968,73 +1065,69 @@ func runReport(args []string, out io.Writer) error {
 		return err
 	}
 	return withProjectLock(root, "report", func() error {
-		appliedPlanID := ""
-		if planID != "" {
-			plan, err := planner.Load(root, planID)
-			if err != nil {
-				return err
-			}
-			task, err := planner.FindTask(plan, taskID)
-			if err != nil {
-				return err
-			}
-			if err := tree.ApplyTaskResult(root, tree.TaskResultUpdate{
-				PromptID:      task.PromptID,
-				Result:        result,
-				ContentHash:   task.ContentHash,
-				EffectiveHash: task.EffectiveHash,
-			}); err != nil {
-				return err
-			}
-			task, err = planner.Report(root, plan, taskID, result, note)
-			if err != nil {
-				return err
-			}
-			appliedPlanID = plan.ID
-			taskID = task.ID
-			fmt.Fprintf(out, "updated %s task %s -> %s\n", plan.ID, task.ID, result)
-		} else if plan, err := planner.LatestActive(root); err != nil {
-			return err
-		} else if plan != nil {
-			task, err := planner.FindTask(plan, taskID)
-			if err != nil {
-				return err
-			}
-			if err := tree.ApplyTaskResult(root, tree.TaskResultUpdate{
-				PromptID:      task.PromptID,
-				Result:        result,
-				ContentHash:   task.ContentHash,
-				EffectiveHash: task.EffectiveHash,
-			}); err != nil {
-				return err
-			}
-			task, err = planner.Report(root, plan, taskID, result, note)
-			if err != nil {
-				return err
-			}
-			appliedPlanID = plan.ID
-			taskID = task.ID
-			fmt.Fprintf(out, "updated %s task %s -> %s\n", plan.ID, task.ID, result)
+		active, err := execution.Load(root)
+		if errors.Is(err, execution.ErrNoActiveTask) {
+			printGateClosed(out, "no_active_task", "run ebo next before reporting a task")
+			return fmt.Errorf("report requires an active task")
 		}
+		if err != nil {
+			printGateClosed(out, "active_task_unreadable", "inspect the runtime state, then run ebo abort <plan-id> to recover")
+			return err
+		}
+		plan, task, err := validateActiveTask(root, active)
+		if err != nil {
+			printGateClosed(out, "active_task_invalid", "abort the active plan before continuing")
+			return err
+		}
+		if planID != "" && planID != plan.ID {
+			return fmt.Errorf("active task belongs to plan %s, not %s", plan.ID, planID)
+		}
+		if taskID != task.ID && taskID != task.PromptID {
+			return fmt.Errorf("active task is %s, not %s", task.ID, taskID)
+		}
+		if err := tree.ApplyTaskResult(root, tree.TaskResultUpdate{
+			PromptID:      task.PromptID,
+			Result:        result,
+			ContentHash:   task.ContentHash,
+			EffectiveHash: task.EffectiveHash,
+		}); err != nil {
+			return err
+		}
+		appliedPlanID := plan.ID
+		taskID = task.ID
+		reportedAt := time.Now().UTC()
 		receipt := map[string]string{
-			"schema":     "ebo.receipt/v1",
-			"plan_id":    appliedPlanID,
-			"task_id":    taskID,
-			"result":     result,
-			"note":       note,
-			"created_at": time.Now().UTC().Format(time.RFC3339),
+			"schema":         "ebo.receipt/v1",
+			"plan_id":        appliedPlanID,
+			"task_id":        taskID,
+			"result":         result,
+			"note":           note,
+			"base_commit":    active.BaseCommit,
+			"content_hash":   active.ContentHash,
+			"effective_hash": active.EffectiveHash,
+			"created_at":     reportedAt.Format(time.RFC3339Nano),
 		}
 		data, err := json.MarshalIndent(receipt, "", "  ")
 		if err != nil {
 			return err
 		}
 		data = append(data, '\n')
-		name := fmt.Sprintf("%s-%s.json", project.SafeFilename(taskID), time.Now().UTC().Format("20060102-150405"))
+		name := fmt.Sprintf("%s-%s.json", project.SafeFilename(taskID), reportedAt.Format("20060102-150405.000000000"))
 		path := filepath.Join(project.NewPaths(root).ReceiptsDir, name)
 		if err := project.WriteFileAtomic(path, data, 0o644); err != nil {
 			return err
 		}
+		task, err = planner.Report(root, plan, task.ID, result, note)
+		if err != nil {
+			_ = os.Remove(path)
+			return err
+		}
+		if err := execution.Clear(root); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "updated %s task %s -> %s\n", plan.ID, task.ID, result)
 		fmt.Fprintf(out, "wrote receipt %s\n", path)
+		fmt.Fprintln(out, "EBO EXECUTION GATE: CLOSED")
 		return nil
 	})
 }
@@ -1052,20 +1145,26 @@ func runVerify(args []string, out io.Writer) error {
 		return err
 	}
 	pending := 0
+	running := 0
 	failed := 0
 	blocked := 0
 	for _, task := range plan.Tasks {
 		switch task.Status {
 		case "pending":
 			pending++
+		case "running":
+			running++
 		case "failed":
 			failed++
 		case "blocked":
 			blocked++
 		}
 	}
-	fmt.Fprintf(out, "plan %s status=%s pending=%d failed=%d blocked=%d\n", plan.ID, plan.Status, pending, failed, blocked)
-	if pending+failed+blocked > 0 {
+	fmt.Fprintf(out, "plan %s status=%s pending=%d running=%d failed=%d blocked=%d\n", plan.ID, plan.Status, pending, running, failed, blocked)
+	if plan.Status != "completed" && plan.Status != "empty" {
+		return fmt.Errorf("plan %s is %s; only completed or empty plans verify successfully", plan.ID, plan.Status)
+	}
+	if pending+running+failed+blocked > 0 {
 		return fmt.Errorf("plan is not complete")
 	}
 	return nil
@@ -1084,11 +1183,22 @@ func runAbort(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		plan.Status = "aborted"
+		planner.Abort(plan)
 		if err := planner.Save(root, plan); err != nil {
 			return err
 		}
+		if active, activeErr := execution.Load(root); activeErr == nil && active.PlanID == plan.ID {
+			if err := execution.Clear(root); err != nil {
+				return err
+			}
+		} else if activeErr != nil && !errors.Is(activeErr, execution.ErrNoActiveTask) {
+			if err := execution.Clear(root); err != nil {
+				return err
+			}
+			fmt.Fprintln(out, "cleared unreadable active task lease")
+		}
 		fmt.Fprintf(out, "aborted %s\n", plan.ID)
+		fmt.Fprintln(out, "EBO EXECUTION GATE: CLOSED")
 		return nil
 	})
 }
@@ -1150,12 +1260,216 @@ func runCommit(args []string, out io.Writer) error {
 		if len(staged) == 0 {
 			return fmt.Errorf("nothing is staged for commit")
 		}
+		if sourceNames := sourceChangeNames(staged); len(sourceNames) > 0 {
+			if _, err := stagedCompletedPlan(root, staged); err != nil {
+				return fmt.Errorf("staged guard rejected commit: %w", err)
+			}
+			fmt.Fprintf(out, "guard:  pass (%d staged source change(s))\n", len(sourceNames))
+		}
 		if err := gitx.Commit(root, message); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "committed %s\n", plan.ID)
 		return nil
 	})
+}
+
+func runGuard(args []string, out io.Writer) error {
+	if len(args) < 1 || args[0] != "check" || len(args) > 2 || (len(args) == 2 && args[1] != "--staged") {
+		return fmt.Errorf("usage: ebo guard check [--staged]")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	if gitx.Head(root) == "" {
+		printGateClosed(out, "git_baseline_missing", "create an initial commit before checking execution authorization")
+		return fmt.Errorf("git baseline is missing")
+	}
+	staged := len(args) == 2
+	if staged {
+		names, err := gitx.CachedNames(root)
+		if err != nil {
+			return err
+		}
+		sourceNames := sourceChangeNames(names)
+		if len(sourceNames) == 0 {
+			fmt.Fprintln(out, "guard: pass")
+			fmt.Fprintln(out, "mode: staged")
+			fmt.Fprintln(out, "reason: no_staged_source_changes")
+			return nil
+		}
+		plan, err := stagedCompletedPlan(root, names)
+		if err != nil {
+			printGateClosed(out, "staged_source_without_completed_plan", "use ebo commit <plan-id> after verification")
+			for _, name := range sourceNames {
+				fmt.Fprintf(out, "- %s\n", name)
+			}
+			return err
+		}
+		fmt.Fprintln(out, "guard: pass")
+		fmt.Fprintln(out, "mode: staged")
+		fmt.Fprintf(out, "plan: %s\n", plan.ID)
+		fmt.Fprintf(out, "source_changes: %d\n", len(sourceNames))
+		return nil
+	}
+
+	names, err := gitx.ChangedNames(root)
+	if err != nil {
+		return err
+	}
+	sourceNames := sourceChangeNames(names)
+	active, activeErr := execution.Load(root)
+	if activeErr == nil {
+		plan, task, err := validateActiveTask(root, active)
+		if err != nil {
+			printGateClosed(out, "active_task_invalid", "resolve or abort the active task")
+			return err
+		}
+		fmt.Fprintln(out, "guard: pass")
+		fmt.Fprintln(out, "EBO EXECUTION GATE: OPEN")
+		fmt.Fprintln(out, "source_edit: allowed")
+		fmt.Fprintf(out, "plan: %s\ntask: %s\nprompt: %s\n", plan.ID, task.ID, task.PromptID)
+		fmt.Fprintf(out, "source_changes: %d\n", len(sourceNames))
+		return nil
+	}
+	if !errors.Is(activeErr, execution.ErrNoActiveTask) {
+		printGateClosed(out, "active_task_unreadable", "inspect the runtime state, then run ebo abort <plan-id> to recover")
+		return activeErr
+	}
+	if len(sourceNames) == 0 {
+		fmt.Fprintln(out, "guard: pass")
+		printGateClosed(out, "no_active_task", "run ebo next before editing source code")
+		return nil
+	}
+	printGateClosed(out, "unauthorized_source_changes", "create and approve a Prompt proposal, then run ebo next")
+	for _, name := range sourceNames {
+		fmt.Fprintf(out, "- %s\n", name)
+	}
+	return fmt.Errorf("%d source change(s) exist without an active Ebo task", len(sourceNames))
+}
+
+func runHooks(args []string, out io.Writer) error {
+	if len(args) != 1 || (args[0] != "install" && args[0] != "status") {
+		return fmt.Errorf("usage: ebo hooks <install|status>")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	if args[0] == "status" {
+		if githooks.Installed(root) {
+			path, _ := githooks.Path(root)
+			fmt.Fprintf(out, "installed %s\n", path)
+		} else {
+			fmt.Fprintln(out, "not installed")
+		}
+		return nil
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return withProjectLock(root, "hooks install", func() error {
+		action, err := githooks.Install(root, executable)
+		if err != nil {
+			return err
+		}
+		path, err := githooks.Path(root)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s %s\n", action, path)
+		return nil
+	})
+}
+
+func sourceChangeNames(names []string) []string {
+	var out []string
+	for _, name := range names {
+		name = filepath.ToSlash(strings.TrimSpace(name))
+		lower := strings.ToLower(name)
+		switch {
+		case strings.HasPrefix(lower, ".ebo/"):
+			continue
+		case strings.HasPrefix(lower, "drafts/"):
+			continue
+		case lower == ".gitignore", lower == "agents.md", lower == "claude.md":
+			continue
+		default:
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+type receiptRecord struct {
+	Schema        string `json:"schema"`
+	PlanID        string `json:"plan_id"`
+	TaskID        string `json:"task_id"`
+	Result        string `json:"result"`
+	BaseCommit    string `json:"base_commit"`
+	ContentHash   string `json:"content_hash"`
+	EffectiveHash string `json:"effective_hash"`
+}
+
+func stagedCompletedPlan(root string, stagedNames []string) (*planner.Plan, error) {
+	head := gitx.Head(root)
+	receipts := map[string][]receiptRecord{}
+	for _, name := range stagedNames {
+		name = filepath.ToSlash(name)
+		if !strings.HasPrefix(name, ".ebo/receipts/") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		data, err := gitx.IndexFile(root, name)
+		if err != nil {
+			continue
+		}
+		var receipt receiptRecord
+		if json.Unmarshal(data, &receipt) == nil && receipt.Schema == "ebo.receipt/v1" && receipt.PlanID != "" {
+			receipts[receipt.PlanID] = append(receipts[receipt.PlanID], receipt)
+		}
+	}
+	for _, name := range stagedNames {
+		name = filepath.ToSlash(name)
+		if !strings.HasPrefix(name, ".ebo/plans/") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		data, err := gitx.IndexFile(root, name)
+		if err != nil {
+			continue
+		}
+		var plan planner.Plan
+		if json.Unmarshal(data, &plan) != nil {
+			continue
+		}
+		filePlanID := strings.TrimSuffix(strings.TrimPrefix(name, ".ebo/plans/"), ".json")
+		if !strings.Contains(filePlanID, "/") && filePlanID == plan.ID && plan.Schema == planner.Schema && plan.Status == "completed" && plan.BaseCommit == head && receiptsCompletePlan(receipts[plan.ID], &plan) {
+			return &plan, nil
+		}
+	}
+	return nil, fmt.Errorf("staged source changes require a staged completed Ebo plan and receipt based on HEAD %s", head)
+}
+
+func receiptsCompletePlan(receipts []receiptRecord, plan *planner.Plan) bool {
+	for _, task := range plan.Tasks {
+		if task.Status != "passed" {
+			return false
+		}
+		matched := false
+		for _, receipt := range receipts {
+			if receipt.Schema == "ebo.receipt/v1" && receipt.PlanID == plan.ID && receipt.TaskID == task.ID && receipt.Result == "passed" &&
+				receipt.BaseCommit == plan.BaseCommit && receipt.ContentHash == task.ContentHash && receipt.EffectiveHash == task.EffectiveHash {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 func runImport(args []string, out io.Writer) error {
@@ -1227,6 +1541,69 @@ func withProjectLock(root, command string, fn func() error) error {
 	return fn()
 }
 
+func printGateClosed(out io.Writer, reason, action string) {
+	fmt.Fprintln(out, "EBO EXECUTION GATE: CLOSED")
+	fmt.Fprintln(out, "source_edit: forbidden")
+	fmt.Fprintf(out, "reason: %s\n", reason)
+	if action != "" {
+		fmt.Fprintf(out, "action: %s\n", action)
+	}
+}
+
+func validateActiveTask(root string, active *execution.ActiveTask) (*planner.Plan, *planner.Task, error) {
+	if active == nil {
+		return nil, nil, execution.ErrNoActiveTask
+	}
+	head := gitx.Head(root)
+	if head == "" {
+		return nil, nil, fmt.Errorf("git baseline is missing")
+	}
+	if active.BaseCommit != head {
+		return nil, nil, fmt.Errorf("active task base commit is %s but HEAD is %s", active.BaseCommit, head)
+	}
+	plan, err := planner.Load(root, active.PlanID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if plan.BaseCommit != active.BaseCommit {
+		return nil, nil, fmt.Errorf("active task and plan base commits do not match")
+	}
+	task, err := planner.FindTask(plan, active.TaskID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if task.Status != "running" {
+		return nil, nil, fmt.Errorf("active task %s is %s, want running", task.ID, task.Status)
+	}
+	if task.PromptID != active.PromptID || task.ContentHash != active.ContentHash || task.EffectiveHash != active.EffectiveHash {
+		return nil, nil, fmt.Errorf("active task no longer matches plan task %s", task.ID)
+	}
+	promptTree, err := tree.LoadProject(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	if issues := promptTree.Validate(); len(issues) > 0 {
+		return nil, nil, fmt.Errorf("tree invalid: %s", strings.Join(issues, "; "))
+	}
+	if err := validateTaskPrompt(promptTree, promptTree.Nodes[task.PromptID], task); err != nil {
+		return nil, nil, err
+	}
+	return plan, task, nil
+}
+
+func validateTaskPrompt(t *tree.Tree, node *document.Prompt, task *planner.Task) error {
+	if node == nil {
+		return fmt.Errorf("prompt %s not found", task.PromptID)
+	}
+	if content := document.ContentHash(node); content != task.ContentHash {
+		return fmt.Errorf("prompt %s content changed after task start", task.PromptID)
+	}
+	if effective := t.EffectiveHashes()[task.PromptID]; effective != task.EffectiveHash {
+		return fmt.Errorf("prompt %s dependencies changed after task start", task.PromptID)
+	}
+	return nil
+}
+
 func defaultRootPrompt() string {
 	return `---
 schema: ebo.prompt/v1
@@ -1289,6 +1666,7 @@ func ensureGitignore(root string) error {
 		".ebo/tmp/",
 		".ebo/runtime/sessions/",
 		".ebo/runtime/logs/",
+		".ebo/runtime/active-task.json",
 	}
 	changed := false
 	for _, line := range lines {
@@ -1734,6 +2112,13 @@ func emptyAsDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func errorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func fileExists(path string) bool {
