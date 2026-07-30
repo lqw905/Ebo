@@ -103,7 +103,7 @@ func TestInitIsolatesEboAndInstallsAgentWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ebo scan", "ebo next", "ebo context <prompt-id>", "spec state is approved"} {
+	for _, want := range []string{"Ebo decides execution eligibility", "ebo scan", "ebo next", "ebo context <prompt-id> --depth 0", "spec state is not approved"} {
 		if !strings.Contains(string(agentData), want) {
 			t.Fatalf("AGENTS.md does not contain %q:\n%s", want, agentData)
 		}

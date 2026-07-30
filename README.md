@@ -22,6 +22,8 @@ This repository currently contains the first MVP slice.
 
 It also installs a small managed block in `AGENTS.md` and, when requested, `CLAUDE.md`. The block tells an agent to run `ebo status`, `ebo scan`, `ebo next`, and `ebo context <prompt-id>` before implementation. Only Prompt proposals that pass hash-bound human approval can enter the tree as executable work.
 
+Ebo owns the execution decision so an agent does not need to load the whole Prompt Tree. `project.root`, unapproved prompts, already-satisfied hashes, and prompts with unready dependencies are skipped. Failed or blocked prompts can be retried. The agent loads only the selected Prompt and its direct semantic links with `ebo context <prompt-id> --depth 0` after `ebo next` returns one executable task. Broader hierarchy context is opt-in, which keeps unnecessary work and context usage low.
+
 ## Build
 
 ```bash

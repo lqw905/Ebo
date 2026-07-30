@@ -23,9 +23,17 @@ func TestUpdateCreatesExecutionProtocol(t *testing.T) {
 	text := string(data)
 	for _, want := range []string{
 		"canonical, version-controlled Prompt Tree is .ebo/tree/",
+		"Ebo decides execution eligibility",
+		"Never browse or load every file in .ebo/tree/",
 		"ebo next",
-		"ebo context <prompt-id>",
-		"spec state is approved",
+		"only the single task package returned by ebo next as executable",
+		"ebo context <prompt-id> --depth 0",
+		"Increase depth only when the task explicitly requires",
+		"spec state is not approved",
+		"satisfied hash still matches their effective hash",
+		"waiting on an unready dependency",
+		"Failed or blocked prompts remain eligible for retry",
+		"Do not preload unrelated branches",
 		"ebo verify <plan-id>",
 	} {
 		if !strings.Contains(text, want) {

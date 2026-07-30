@@ -28,13 +28,14 @@ When generating Prompt Markdown:
 7. Never run ebo approve or ebo apply. Those commands require human review and approval.
 
 When executing code:
-1. Run ebo status and ebo scan at the start of the task.
-2. Run ebo next to open or continue the active execution plan.
-3. Read the returned task package, then run ebo context <prompt-id> before changing code to inspect its dependencies and related prompts.
-4. Execute only prompts whose spec state is approved. Stop if Ebo returns no approved task.
-5. Implement one task package at a time and follow its acceptance criteria.
-6. Report the result with the exact ebo report command from the task package, then run ebo verify <plan-id>.
-7. Do not forge prompt state or hashes by editing .ebo/tree/.
+1. Ebo decides execution eligibility. Never browse or load every file in .ebo/tree/ to choose work yourself.
+2. Run ebo status and ebo scan at the start of the task, then run ebo next to open or continue the active execution plan.
+3. Ignore project.root, prompts whose spec state is not approved, prompts whose satisfied hash still matches their effective hash, and prompts waiting on an unready dependency. Failed or blocked prompts remain eligible for retry.
+4. Treat only the single task package returned by ebo next as executable. If ebo next returns no task, stop without loading Prompt files.
+5. After ebo next selects a task, run ebo context <prompt-id> --depth 0 before changing code. This loads the selected Prompt and its direct semantic links without expanding unrelated tree branches. Increase depth only when the task explicitly requires broader hierarchy context.
+6. Implement that one task package and follow its acceptance criteria. Do not preload unrelated branches of the Prompt Tree.
+7. Report the result with the exact ebo report command from the task package, then run ebo verify <plan-id>.
+8. Do not forge prompt state or hashes by editing .ebo/tree/.
 <!-- EBO:END -->
 `
 
