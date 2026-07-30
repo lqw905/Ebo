@@ -53,6 +53,10 @@ func TestCLISmoke(t *testing.T) {
 	if deniedCode != 1 || !strings.Contains(deniedOutput, "EBO PRE-WRITE: DENIED") || !strings.Contains(deniedOutput, "reason: no_active_task") {
 		t.Fatalf("pre-write without active task should be denied, code=%d output=%s", deniedCode, deniedOutput)
 	}
+	codexDenied := runCLI(t, codexPreToolUseInput("internal/auth/service.go"), "hook", "codex-pre-tool-use")
+	if !strings.Contains(codexDenied, `"permissionDecision":"deny"`) || !strings.Contains(codexDenied, "no_active_task") {
+		t.Fatalf("Codex adapter should deny an unauthorized apply_patch: %s", codexDenied)
+	}
 	draftOutput := runCLI(t, nil, "hook", "pre-write", "--path", "drafts/ebo/login/prompt.md")
 	if !strings.Contains(draftOutput, "mode: proposal_draft") || !strings.Contains(draftOutput, "source_edit: forbidden") {
 		t.Fatalf("Prompt draft should be allowed without opening source gate: %s", draftOutput)
@@ -83,6 +87,10 @@ func TestCLISmoke(t *testing.T) {
 	preWriteOutput := runCLI(t, nil, "hook", "pre-write", "--path", "internal/auth/service.go", "--json")
 	if !strings.Contains(preWriteOutput, `"allowed":true`) || !strings.Contains(preWriteOutput, `"gate":"open"`) || !strings.Contains(preWriteOutput, `"path":"internal/auth/service.go"`) {
 		t.Fatalf("active pre-write decision = %s", preWriteOutput)
+	}
+	codexAllowed := runCLI(t, codexPreToolUseInput("internal/auth/service.go"), "hook", "codex-pre-tool-use")
+	if strings.TrimSpace(codexAllowed) != "" {
+		t.Fatalf("Codex adapter should allow an authorized apply_patch without output: %s", codexAllowed)
 	}
 	outOfScopeOutput, outOfScopeCode := runCLIResult(nil, "hook", "pre-write", "--path", "internal/payment/service.go")
 	if outOfScopeCode != 1 || !strings.Contains(outOfScopeOutput, "reason: path_outside_prompt_scope") {

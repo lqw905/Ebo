@@ -88,8 +88,11 @@ ebo guard check
 ebo guard check --staged
 ebo hook pre-write --path <file>
 ebo hook pre-write --path <file> --json
+ebo hook codex-pre-tool-use
 ebo hooks install
 ebo hooks status
+ebo hooks install codex
+ebo hooks status codex
 ```
 
 `approve` intentionally requires an interactive terminal and a `[y/N]` confirmation. Ebo binds the full proposal hash internally and verifies it again during `apply`, so users do not need to copy a SHA-256 value while changed content is still rejected.
@@ -114,6 +117,7 @@ ebo hooks status
 - Git baseline enforcement before planning or execution.
 - `ebo guard check` for working-tree authorization and staged-plan validation.
 - Strict Agent pre-write decisions with deterministic exit codes and optional JSON output.
+- Global Codex `PreToolUse` adapter installed with `ebo hooks install codex`; it is a no-op outside initialized Ebo projects.
 - Optional Prompt `scope.allow` and `scope.deny` globs for file-level write authorization.
 - Optional managed pre-commit hook installed with `ebo hooks install`.
 - Conservative `commit` orchestration for completed plans.

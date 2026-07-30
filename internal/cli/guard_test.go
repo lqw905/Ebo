@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -53,6 +55,32 @@ func TestReceiptsCompletePlanRequiresPassedReceiptForEveryTask(t *testing.T) {
 	if receiptsCompletePlan(receipts, plan) {
 		t.Fatal("hash-mismatched receipt must not satisfy staged guard")
 	}
+}
+
+func TestPatchTargetPaths(t *testing.T) {
+	patch := "*** Begin Patch\n*** Update File: internal/auth/service.go\n*** Move to: internal/auth/login.go\n*** Add File: drafts/ebo/login.md\n*** End Patch"
+	got := patchTargetPaths(patch)
+	want := []string{"internal/auth/service.go", "internal/auth/login.go", "drafts/ebo/login.md"}
+	if len(got) != len(want) {
+		t.Fatalf("patchTargetPaths = %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("patchTargetPaths[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func codexPreToolUseInput(path string) *bytes.Buffer {
+	payload := map[string]any{
+		"hook_event_name": "PreToolUse",
+		"tool_name":       "apply_patch",
+		"tool_input": map[string]string{
+			"command": "*** Begin Patch\n*** Update File: " + path + "\n*** End Patch",
+		},
+	}
+	data, _ := json.Marshal(payload)
+	return bytes.NewBuffer(data)
 }
 
 func TestProjectRelativePathUsesProjectRoot(t *testing.T) {

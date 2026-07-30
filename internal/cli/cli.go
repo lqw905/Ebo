@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lqw905/Ebo/internal/agentdocs"
+	"github.com/lqw905/Ebo/internal/codexhooks"
 	"github.com/lqw905/Ebo/internal/document"
 	"github.com/lqw905/Ebo/internal/execution"
 	"github.com/lqw905/Ebo/internal/githooks"
@@ -91,7 +93,7 @@ func Execute(args []string, in io.Reader, out, errOut io.Writer) int {
 	case "guard":
 		err = runGuard(args[1:], out)
 	case "hook":
-		err = runHook(args[1:], out)
+		err = runHook(args[1:], in, out)
 	case "hooks":
 		err = runHooks(args[1:], out)
 	default:
@@ -128,7 +130,8 @@ Usage:
   ebo commit <plan-id> [--dry-run] [--message "..."]
   ebo guard check [--staged]
   ebo hook pre-write --path <file> [--json]
-  ebo hooks (install | status)
+  ebo hook codex-pre-tool-use
+  ebo hooks (install | status) [git|codex]
   ebo import <path> [--out <dir>] [--dry-run]
   ebo lock status
   ebo doctor
@@ -1388,9 +1391,15 @@ type preWriteResult struct {
 	PromptID string `json:"prompt_id,omitempty"`
 }
 
-func runHook(args []string, out io.Writer) error {
-	if len(args) == 0 || args[0] != "pre-write" {
-		return fmt.Errorf("usage: ebo hook pre-write --path <file> [--json]")
+func runHook(args []string, in io.Reader, out io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: ebo hook <pre-write|codex-pre-tool-use>")
+	}
+	if args[0] == "codex-pre-tool-use" {
+		return runCodexPreToolUse(args[1:], in, out)
+	}
+	if args[0] != "pre-write" {
+		return fmt.Errorf("usage: ebo hook <pre-write|codex-pre-tool-use>")
 	}
 	fs := newFlagSet("hook pre-write", io.Discard)
 	target := fs.String("path", "", "project-relative file path that the Agent intends to write")
@@ -1502,6 +1511,87 @@ func runHook(args []string, out io.Writer) error {
 	return nil
 }
 
+type codexPreToolInput struct {
+	HookEventName string `json:"hook_event_name"`
+	ToolName      string `json:"tool_name"`
+	ToolInput     struct {
+		Command string `json:"command"`
+	} `json:"tool_input"`
+}
+
+func runCodexPreToolUse(args []string, in io.Reader, out io.Writer) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: ebo hook codex-pre-tool-use")
+	}
+	var input codexPreToolInput
+	if err := json.NewDecoder(in).Decode(&input); err != nil {
+		emitCodexDeny(out, "Ebo could not parse the Codex PreToolUse input")
+		return nil
+	}
+	if input.HookEventName != "PreToolUse" || input.ToolName != "apply_patch" {
+		return nil
+	}
+	paths := patchTargetPaths(input.ToolInput.Command)
+	if len(paths) == 0 {
+		emitCodexDeny(out, "Ebo could not determine the target paths in this apply_patch call")
+		return nil
+	}
+	if _, err := requireRoot(); err != nil {
+		// The global Codex hook intentionally has no effect outside Ebo projects.
+		return nil
+	}
+	for _, path := range paths {
+		var decision bytes.Buffer
+		err := runHook([]string{"pre-write", "--path", path, "--json"}, bytes.NewReader(nil), &decision)
+		if err == nil {
+			continue
+		}
+		var result preWriteResult
+		reason := strings.TrimSpace(decision.String())
+		if json.Unmarshal(bytes.TrimSpace(decision.Bytes()), &result) == nil && result.Reason != "" {
+			reason = result.Reason
+		}
+		if reason == "" {
+			reason = err.Error()
+		}
+		emitCodexDeny(out, fmt.Sprintf("Ebo denied writing %s: %s", path, reason))
+		return nil
+	}
+	return nil
+}
+
+func patchTargetPaths(patch string) []string {
+	prefixes := []string{"*** Add File:", "*** Update File:", "*** Delete File:", "*** Move to:"}
+	seen := map[string]bool{}
+	var paths []string
+	for _, line := range strings.Split(strings.ReplaceAll(patch, "\r\n", "\n"), "\n") {
+		for _, prefix := range prefixes {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			path := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if path != "" && !seen[path] {
+				seen[path] = true
+				paths = append(paths, path)
+			}
+			break
+		}
+	}
+	return paths
+}
+
+func emitCodexDeny(out io.Writer, reason string) {
+	payload := map[string]any{
+		"hookSpecificOutput": map[string]string{
+			"hookEventName":            "PreToolUse",
+			"permissionDecision":       "deny",
+			"permissionDecisionReason": reason,
+		},
+	}
+	data, _ := json.Marshal(payload)
+	fmt.Fprintln(out, string(data))
+}
+
 func emitPreWriteResult(out io.Writer, result preWriteResult, jsonOutput bool) {
 	if jsonOutput {
 		data, _ := json.Marshal(result)
@@ -1571,8 +1661,44 @@ func promptDraftPath(path string) bool {
 }
 
 func runHooks(args []string, out io.Writer) error {
-	if len(args) != 1 || (args[0] != "install" && args[0] != "status") {
-		return fmt.Errorf("usage: ebo hooks <install|status>")
+	if len(args) < 1 || len(args) > 2 || (args[0] != "install" && args[0] != "status") {
+		return fmt.Errorf("usage: ebo hooks <install|status> [git|codex]")
+	}
+	target := "git"
+	if len(args) == 2 {
+		target = args[1]
+	}
+	if target != "git" && target != "codex" {
+		return fmt.Errorf("hook target must be git or codex")
+	}
+	if target == "codex" {
+		if args[0] == "status" {
+			path, err := codexhooks.GlobalPath()
+			if err != nil {
+				return err
+			}
+			if codexhooks.Installed(path) {
+				fmt.Fprintf(out, "installed %s\n", path)
+			} else {
+				fmt.Fprintf(out, "not installed %s\n", path)
+			}
+			return nil
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		path, err := codexhooks.GlobalPath()
+		if err != nil {
+			return err
+		}
+		action, err := codexhooks.Install(path, executable)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s %s\n", action, path)
+		fmt.Fprintln(out, "Open /hooks in Codex to review and trust the new hook definition.")
+		return nil
 	}
 	root, err := requireRoot()
 	if err != nil {

@@ -15,6 +15,14 @@ ebo hook pre-write --path path/to/file --json
 
 The command is local and deterministic: it does not call AI or access the network. Use `ebo hooks install` separately to install the optional Git pre-commit guard for the current repository.
 
+Codex users can install a global native `PreToolUse` adapter:
+
+```bash
+ebo hooks install codex
+```
+
+Then open `/hooks` in Codex to review and trust the new hook definition. The global adapter is a no-op outside initialized Ebo projects.
+
 The launcher does not download binaries during `postinstall`.
 
 The MVP npm distribution supports Windows x64 and macOS arm64. Other platforms will fail with a clear unsupported-platform message.

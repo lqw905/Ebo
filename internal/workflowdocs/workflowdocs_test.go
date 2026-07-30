@@ -30,6 +30,8 @@ func TestUpdateCreatesChineseWorkflow(t *testing.T) {
 		"ebo guard check",
 		"ebo hook pre-write --path <目标文件>",
 		"退出码 `0` 表示本次写入允许",
+		"ebo hooks install codex",
+		"打开 `/hooks`",
 		"scope.allow",
 		"ebo commit` 本身也会执行同等校验",
 		"ebo context <prompt-id> --depth 0",
