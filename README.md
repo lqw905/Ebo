@@ -86,7 +86,7 @@ ebo import . --out .ebo/runtime/import
 ebo lock status
 ```
 
-`approve` intentionally requires an interactive terminal and asks the user to type the exact proposal hash. This keeps the human approval boundary explicit.
+`approve` intentionally requires an interactive terminal and a `[y/N]` confirmation. Ebo binds the full proposal hash internally and verifies it again during `apply`, so users do not need to copy a SHA-256 value while changed content is still rejected.
 
 ## Current Scope
 

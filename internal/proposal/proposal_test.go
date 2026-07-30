@@ -26,26 +26,7 @@ func TestProposalApproveApplyLifecycle(t *testing.T) {
 		Kind: "file",
 		Path: "drafts/hello.md",
 		Name: "hello.md",
-		Data: []byte(`---
-schema: ebo.prompt/v1
-id: feature.hello
-title: Hello
-kind: feature
-parent: project.root
-revision: 1
-origin: human
-confidence: confirmed
-state:
-  spec: draft
-  execution: not_started
-  sync: dirty
-links:
-  references: []
----
-## Intent
-
-Say hello.
-`),
+		Data: []byte(helloPromptFixture),
 	}}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -53,8 +34,12 @@ Say hello.
 	if meta.Status != "proposed" {
 		t.Fatalf("status = %q", meta.Status)
 	}
-	if _, err := Approve(root, meta.ID, meta.ProposalHash); err != nil {
+	approved, err := Approve(root, meta.ID)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if approved.ApprovedHash != meta.ProposalHash {
+		t.Fatalf("approved hash = %q, want %q", approved.ApprovedHash, meta.ProposalHash)
 	}
 	if _, err := Apply(root, meta.ID); err != nil {
 		t.Fatal(err)
@@ -85,6 +70,55 @@ Say hello.
 	}
 }
 
+func TestApproveRejectsChangedProposalContent(t *testing.T) {
+	root := t.TempDir()
+	if err := project.EnsureLayout(root); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := Create(root, []Source{{
+		Kind: "file",
+		Path: "drafts/hello.md",
+		Name: "hello.md",
+		Data: []byte(helloPromptFixture),
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := filepath.Join(project.NewPaths(root).ProposalsDir, meta.ID, filepath.FromSlash(meta.Sources[0].StoredPath))
+	if err := os.WriteFile(stored, []byte(rootPromptFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Approve(root, meta.ID); err == nil {
+		t.Fatal("expected changed proposal content to be rejected")
+	}
+}
+
+func TestApplyRejectsContentChangedAfterApproval(t *testing.T) {
+	root := t.TempDir()
+	if err := project.EnsureLayout(root); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := Create(root, []Source{{
+		Kind: "file",
+		Path: "drafts/hello.md",
+		Name: "hello.md",
+		Data: []byte(helloPromptFixture),
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Approve(root, meta.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored := filepath.Join(project.NewPaths(root).ProposalsDir, meta.ID, filepath.FromSlash(meta.Sources[0].StoredPath))
+	if err := os.WriteFile(stored, []byte(rootPromptFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(root, meta.ID); err == nil {
+		t.Fatal("expected changed approved content to be rejected during apply")
+	}
+}
+
 const rootPromptFixture = `---
 schema: ebo.prompt/v1
 id: project.root
@@ -106,4 +140,21 @@ links:
 ## Intent
 
 Root.
+`
+
+const helloPromptFixture = `---
+schema: ebo.prompt/v1
+id: feature.hello
+title: Hello
+kind: feature
+parent: project.root
+state:
+  spec: draft
+  execution: not_started
+  sync: dirty
+links:
+  references: []
+---
+## Intent
+Say hello.
 `

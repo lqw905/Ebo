@@ -144,7 +144,7 @@ func RecomputeHash(root string, meta *Meta) (string, error) {
 	return actual.ProposalHash, nil
 }
 
-func Approve(root, id, hash string) (*Meta, error) {
+func Approve(root, id string) (*Meta, error) {
 	meta, err := Load(root, id)
 	if err != nil {
 		return nil, err
@@ -156,12 +156,9 @@ func Approve(root, id, hash string) (*Meta, error) {
 	if actual.ProposalHash != meta.ProposalHash {
 		return nil, fmt.Errorf("proposal content changed: expected %s, got %s", meta.ProposalHash, actual.ProposalHash)
 	}
-	if hash != meta.ProposalHash {
-		return nil, fmt.Errorf("approval hash does not match proposal hash")
-	}
 	meta.Status = "approved"
 	meta.ApprovedAt = time.Now().UTC().Format(time.RFC3339)
-	meta.ApprovedHash = hash
+	meta.ApprovedHash = actual.ProposalHash
 	meta.RejectedAt = ""
 	meta.RejectReason = ""
 	if err := Save(root, meta); err != nil {

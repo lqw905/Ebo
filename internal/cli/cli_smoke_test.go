@@ -139,6 +139,24 @@ func TestInitIsolatesEboAndInstallsAgentWorkflow(t *testing.T) {
 	}
 }
 
+func TestApprovalConfirmed(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{input: "y\n", want: true},
+		{input: "YES\n", want: true},
+		{input: "", want: false},
+		{input: "n\n", want: false},
+		{input: "sha256:abc\n", want: false},
+	}
+	for _, test := range tests {
+		if got := approvalConfirmed(test.input); got != test.want {
+			t.Errorf("approvalConfirmed(%q) = %v, want %v", test.input, got, test.want)
+		}
+	}
+}
+
 func runCLI(t *testing.T, in *bytes.Buffer, args ...string) string {
 	t.Helper()
 	var stdout bytes.Buffer

@@ -420,18 +420,32 @@ func runApprove(args []string, in io.Reader, out io.Writer) error {
 	if !isTerminal(in) {
 		return fmt.Errorf("approve requires an interactive terminal")
 	}
+	actualHash, err := proposal.RecomputeHash(root, meta)
+	if err != nil {
+		return err
+	}
+	if actualHash != meta.ProposalHash {
+		return fmt.Errorf("proposal content changed: expected %s, got %s", meta.ProposalHash, actualHash)
+	}
 	fmt.Fprintf(out, "Proposal: %s\n", meta.ID)
-	fmt.Fprintf(out, "Hash:     %s\n", meta.ProposalHash)
-	fmt.Fprintln(out, "Type the exact hash to approve:")
+	fmt.Fprintf(out, "Nodes:    %d\n", len(meta.Nodes))
+	for _, node := range meta.Nodes {
+		fmt.Fprintf(out, "- %s (%s): %s\n", node.ID, node.Kind, node.Title)
+	}
+	fmt.Fprintf(out, "Hash:     %s\n", document.ShortHash(meta.ProposalHash, 12))
+	fmt.Fprintln(out, "Approve this proposal? [y/N]")
 	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
-	hash := strings.TrimSpace(line)
+	if !approvalConfirmed(line) {
+		fmt.Fprintln(out, "approval canceled")
+		return nil
+	}
 	var approved *proposal.Meta
 	err = withProjectLock(root, "approve", func() error {
 		var approveErr error
-		approved, approveErr = proposal.Approve(root, meta.ID, hash)
+		approved, approveErr = proposal.Approve(root, meta.ID)
 		return approveErr
 	})
 	if err != nil {
@@ -439,6 +453,15 @@ func runApprove(args []string, in io.Reader, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "approved %s at %s\n", approved.ID, approved.ApprovedAt)
 	return nil
+}
+
+func approvalConfirmed(input string) bool {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func runReject(args []string, out io.Writer) error {

@@ -179,7 +179,7 @@ ebo approve <proposal-id>
 ebo apply <proposal-id>
 ```
 
-`ebo approve` 会要求用户在交互终端输入完整 proposal hash。只有通过这一步，Prompt 才能成为可执行工作。
+`ebo approve` 会显示 proposal 摘要和短哈希，并要求用户在交互终端输入 `y` 确认。Ebo 会在内部重新计算并保存完整 proposal hash；`ebo apply` 前还会再次校验，内容一旦变化就拒绝应用。只有通过这一步，Prompt 才能成为可执行工作。
 
 ## 9. 继续已有执行计划
 
