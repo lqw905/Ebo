@@ -23,6 +23,7 @@ type Paths struct {
 	Root         string
 	EboDir       string
 	ConfigFile   string
+	WorkflowFile string
 	TreeDir      string
 	ProposalsDir string
 	PlansDir     string
@@ -39,6 +40,7 @@ func NewPaths(root string) Paths {
 		Root:         root,
 		EboDir:       ebo,
 		ConfigFile:   filepath.Join(ebo, ConfigName),
+		WorkflowFile: filepath.Join(ebo, "WORKFLOW.md"),
 		TreeDir:      filepath.Join(ebo, "tree"),
 		ProposalsDir: filepath.Join(ebo, "proposals"),
 		PlansDir:     filepath.Join(ebo, "plans"),

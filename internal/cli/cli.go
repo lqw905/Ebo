@@ -23,6 +23,7 @@ import (
 	"github.com/lqw905/Ebo/internal/project"
 	"github.com/lqw905/Ebo/internal/proposal"
 	"github.com/lqw905/Ebo/internal/tree"
+	"github.com/lqw905/Ebo/internal/workflowdocs"
 )
 
 var (
@@ -137,11 +138,16 @@ func runInit(args []string, out, errOut io.Writer) error {
 		return err
 	}
 	if !fileExists(paths.ConfigFile) {
-		config := fmt.Sprintf("schema = \"ebo.config/v1\"\nproject_root = %q\ntree_dir = \".ebo/tree\"\nzero_ai = true\n", filepath.ToSlash(root))
+		config := fmt.Sprintf("schema = \"ebo.config/v1\"\nproject_root = %q\ntree_dir = \".ebo/tree\"\nworkflow_file = \".ebo/WORKFLOW.md\"\nzero_ai = true\n", filepath.ToSlash(root))
 		if err := project.WriteFileAtomic(paths.ConfigFile, []byte(config), 0o644); err != nil {
 			return err
 		}
 	}
+	workflowAction, err := workflowdocs.Update(paths.WorkflowFile)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s %s\n", workflowAction, filepath.ToSlash(filepath.Join(project.DirName, workflowdocs.Filename)))
 	rootPrompt, err := project.NodePathForID(paths.TreeDir, project.RootID)
 	if err != nil {
 		return err
@@ -203,6 +209,7 @@ func runDoctor(args []string, out io.Writer) error {
 		}
 	}
 	check(fileExists(paths.ConfigFile), "config", paths.ConfigFile)
+	check(workflowdocs.IsManaged(paths.WorkflowFile), "workflow document", paths.WorkflowFile)
 	check(dirExists(paths.TreeDir), "tree directory", paths.TreeDir)
 	check(dirExists(paths.ProposalsDir), "proposal directory", paths.ProposalsDir)
 	check(gitInside(root), "git repository", "not inside a Git work tree")

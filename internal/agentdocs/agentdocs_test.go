@@ -22,19 +22,11 @@ func TestUpdateCreatesExecutionProtocol(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
-		"canonical, version-controlled Prompt Tree is .ebo/tree/",
-		"Ebo decides execution eligibility",
-		"Never browse or load every file in .ebo/tree/",
-		"ebo next",
-		"only the single task package returned by ebo next as executable",
-		"ebo context <prompt-id> --depth 0",
-		"Increase depth only when the task explicitly requires",
-		"spec state is not approved",
-		"satisfied hash still matches their effective hash",
-		"waiting on an unready dependency",
-		"Failed or blocked prompts remain eligible for retry",
-		"Do not preload unrelated branches",
-		"ebo verify <plan-id>",
+		"此区块由 Ebo 管理",
+		"必须先完整阅读并遵守 .ebo/WORKFLOW.md",
+		"只执行 ebo next 返回的单个任务",
+		"不得遍历整个 .ebo/tree/",
+		"Agent 不得执行",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("managed block does not contain %q:\n%s", want, text)

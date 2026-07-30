@@ -10,6 +10,7 @@ This repository currently contains the first MVP slice.
 
 ```text
 .ebo/
+  WORKFLOW.md 中文使用手册和可复制的 Agent 提示词
   tree/       canonical, version-controlled Prompt Tree
   proposals/  Prompt changes waiting for human review
   plans/      execution plans
@@ -20,7 +21,7 @@ This repository currently contains the first MVP slice.
   tmp/        ignored temporary files
 ```
 
-It also installs a small managed block in `AGENTS.md` and, when requested, `CLAUDE.md`. The block tells an agent to run `ebo status`, `ebo scan`, `ebo next`, and `ebo context <prompt-id>` before implementation. Only Prompt proposals that pass hash-bound human approval can enter the tree as executable work.
+It also generates a Chinese `.ebo/WORKFLOW.md` with copyable prompts for each user and agent flow. A small managed block in `AGENTS.md` and, when requested, `CLAUDE.md`, tells the agent to read that document before working. Only Prompt proposals that pass hash-bound human approval can enter the tree as executable work.
 
 Ebo owns the execution decision so an agent does not need to load the whole Prompt Tree. `project.root`, unapproved prompts, already-satisfied hashes, and prompts with unready dependencies are skipped. Failed or blocked prompts can be retried. The agent loads only the selected Prompt and its direct semantic links with `ebo context <prompt-id> --depth 0` after `ebo next` returns one executable task. Broader hierarchy context is opt-in, which keeps unnecessary work and context usage low.
 
@@ -90,6 +91,7 @@ ebo lock status
 ## Current Scope
 
 - `.ebo/` project layout and root prompt initialization.
+- Generated Chinese `.ebo/WORKFLOW.md` with copyable prompts for every common Ebo flow.
 - Managed Ebo blocks in `AGENTS.md` and `CLAUDE.md`.
 - Markdown Prompt parsing with YAML Front Matter subset support.
 - Proposal creation from stdin, file, or directory.

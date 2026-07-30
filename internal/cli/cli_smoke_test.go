@@ -80,10 +80,14 @@ func TestInitIsolatesEboAndInstallsAgentWorkflow(t *testing.T) {
 	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runCLI(t, nil, "init", "--agents", "codex,claude")
+	initOutput := runCLI(t, nil, "init", "--agents", "codex,claude")
+	if !strings.Contains(initOutput, "created .ebo/WORKFLOW.md") {
+		t.Fatalf("init output does not report workflow creation:\n%s", initOutput)
+	}
 
 	for _, path := range []string{
 		filepath.Join(root, ".ebo", "config.toml"),
+		filepath.Join(root, ".ebo", "WORKFLOW.md"),
 		filepath.Join(root, ".ebo", "tree", "project.md"),
 		filepath.Join(root, "AGENTS.md"),
 		filepath.Join(root, "CLAUDE.md"),
@@ -99,13 +103,36 @@ func TestInitIsolatesEboAndInstallsAgentWorkflow(t *testing.T) {
 	if string(data) != source {
 		t.Fatalf("source file was changed: %q", data)
 	}
+	configData, err := os.ReadFile(filepath.Join(root, ".ebo", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configData), `workflow_file = ".ebo/WORKFLOW.md"`) {
+		t.Fatalf("config does not declare workflow file:\n%s", configData)
+	}
 	agentData, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Ebo decides execution eligibility", "ebo scan", "ebo next", "ebo context <prompt-id> --depth 0", "spec state is not approved"} {
+	for _, want := range []string{".ebo/WORKFLOW.md", "只执行 ebo next 返回的单个任务", "Agent 不得执行"} {
 		if !strings.Contains(string(agentData), want) {
 			t.Fatalf("AGENTS.md does not contain %q:\n%s", want, agentData)
+		}
+	}
+	workflowData, err := os.ReadFile(filepath.Join(root, ".ebo", "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"# Ebo 项目使用说明",
+		"## 2. Prompt 标记与执行资格",
+		"## 4. 执行下一个 Prompt",
+		"输入给 Agent",
+		"ebo context <prompt-id> --depth 0",
+		"## 10. 从已有项目反向抽象 Prompt 树",
+	} {
+		if !strings.Contains(string(workflowData), want) {
+			t.Fatalf("WORKFLOW.md does not contain %q:\n%s", want, workflowData)
 		}
 	}
 }

@@ -1,6 +1,7 @@
-package agentdocs
+package workflowdocs
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"strings"
@@ -9,18 +10,13 @@ import (
 )
 
 const (
-	startMarker = "<!-- EBO:START -->"
-	endMarker   = "<!-- EBO:END -->"
+	Filename    = "WORKFLOW.md"
+	startMarker = "<!-- EBO:WORKFLOW:START -->"
+	endMarker   = "<!-- EBO:WORKFLOW:END -->"
 )
 
-const ManagedBlock = `<!-- EBO:START -->
-此区块由 Ebo 管理。
-
-本项目使用 Ebo 管理 Prompt 树。在规划、生成 Prompt 或修改代码之前，必须先完整阅读并遵守 .ebo/WORKFLOW.md。
-只执行 ebo next 返回的单个任务；不得遍历整个 .ebo/tree/ 自行选择任务，不得直接修改 Prompt 状态或哈希。
-ebo approve 和 ebo apply 属于人工审批步骤，Agent 不得执行。
-<!-- EBO:END -->
-`
+//go:embed WORKFLOW.zh-CN.md
+var ManagedBlock string
 
 func Update(path string) (string, error) {
 	data, err := os.ReadFile(path)
@@ -52,15 +48,27 @@ func Update(path string) (string, error) {
 		return "appended", nil
 	}
 	if end < start {
-		return "", fmt.Errorf("%s has malformed Ebo managed block", path)
+		return "", fmt.Errorf("%s has malformed Ebo workflow block", path)
 	}
 	end += len(endMarker)
 	next := text[:start] + strings.TrimRight(ManagedBlock, "\n") + text[end:]
 	if !strings.HasSuffix(next, "\n") {
 		next += "\n"
 	}
+	if next == text {
+		return "unchanged", nil
+	}
 	if err := project.WriteFileAtomic(path, []byte(next), 0o644); err != nil {
 		return "", err
 	}
 	return "updated", nil
+}
+
+func IsManaged(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	text := string(data)
+	return strings.Contains(text, startMarker) && strings.Contains(text, endMarker)
 }
