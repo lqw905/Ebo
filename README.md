@@ -117,13 +117,15 @@ ebo hooks status codex
 - Git baseline enforcement before planning or execution.
 - `ebo guard check` for working-tree authorization and staged-plan validation.
 - Strict Agent pre-write decisions with deterministic exit codes and optional JSON output.
-- Global Codex `PreToolUse` adapter installed with `ebo hooks install codex`; it is a no-op outside initialized Ebo projects.
+- Project-local Codex `PreToolUse` adapter explicitly installed into `.codex/hooks.json` with `ebo hooks install codex`.
 - Optional Prompt `scope.allow` and `scope.deny` globs for file-level write authorization.
 - Optional managed pre-commit hook installed with `ebo hooks install`.
 - Conservative `commit` orchestration for completed plans.
 - Basic evidence package export for reverse import workflows.
 - npm root launcher and platform package skeletons under `npm/`.
 - Initial npm distribution targets Windows x64 and macOS arm64.
+
+Installing the npm package only places the `ebo` executable on `PATH`. It does not modify user-level Codex configuration, project `.codex/` files, or Git hooks. Those integrations are opt-in commands that must be run inside an initialized Ebo project.
 
 ## Not Complete Yet
 

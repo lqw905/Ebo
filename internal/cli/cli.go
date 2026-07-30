@@ -1671,12 +1671,13 @@ func runHooks(args []string, out io.Writer) error {
 	if target != "git" && target != "codex" {
 		return fmt.Errorf("hook target must be git or codex")
 	}
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
 	if target == "codex" {
+		path := codexhooks.ProjectPath(root)
 		if args[0] == "status" {
-			path, err := codexhooks.GlobalPath()
-			if err != nil {
-				return err
-			}
 			if codexhooks.Installed(path) {
 				fmt.Fprintf(out, "installed %s\n", path)
 			} else {
@@ -1684,25 +1685,15 @@ func runHooks(args []string, out io.Writer) error {
 			}
 			return nil
 		}
-		executable, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		path, err := codexhooks.GlobalPath()
-		if err != nil {
-			return err
-		}
-		action, err := codexhooks.Install(path, executable)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "%s %s\n", action, path)
-		fmt.Fprintln(out, "Open /hooks in Codex to review and trust the new hook definition.")
-		return nil
-	}
-	root, err := requireRoot()
-	if err != nil {
-		return err
+		return withProjectLock(root, "hooks install codex", func() error {
+			action, err := codexhooks.Install(path)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "%s %s\n", action, path)
+			fmt.Fprintln(out, "This is a project-local hook. Open /hooks in Codex to review and trust it.")
+			return nil
+		})
 	}
 	if args[0] == "status" {
 		if githooks.Installed(root) {

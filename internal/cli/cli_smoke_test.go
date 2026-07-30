@@ -34,7 +34,31 @@ func TestCLISmoke(t *testing.T) {
 		t.Fatalf("git init failed: %v\n%s", err, output)
 	}
 
+	notInitializedOutput, notInitializedCode := runCLIResult(nil, "hooks", "install", "codex")
+	if notInitializedCode == 0 || !strings.Contains(notInitializedOutput, "not initialized") {
+		t.Fatalf("Codex hook install must require an initialized project, code=%d output=%s", notInitializedCode, notInitializedOutput)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".codex", "hooks.json")); !os.IsNotExist(err) {
+		t.Fatalf("Codex hook config must not be written before Ebo init: %v", err)
+	}
+
 	runCLI(t, nil, "init", "--agents", "none")
+	hookOutput := runCLI(t, nil, "hooks", "install", "codex")
+	hookPath := filepath.Join(root, ".codex", "hooks.json")
+	if !strings.Contains(hookOutput, hookPath) || !strings.Contains(hookOutput, "project-local hook") {
+		t.Fatalf("Codex hook install output = %s", hookOutput)
+	}
+	hookData, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(hookData, []byte(`"command": "ebo hook codex-pre-tool-use"`)) || bytes.Contains(hookData, []byte(root)) {
+		t.Fatalf("Codex hook must be portable and project-local:\n%s", hookData)
+	}
+	hookStatus := runCLI(t, nil, "hooks", "status", "codex")
+	if !strings.Contains(hookStatus, "installed "+hookPath) {
+		t.Fatalf("Codex hook status = %s", hookStatus)
+	}
 	writePrompt(t, root, project.RootID, rootPrompt)
 	writePrompt(t, root, "architecture.identity", identityPrompt)
 	writePrompt(t, root, "feature.login", loginPrompt)

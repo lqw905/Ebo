@@ -12,15 +12,11 @@ import (
 
 const adapterCommand = "hook codex-pre-tool-use"
 
-func GlobalPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".codex", "hooks.json"), nil
+func ProjectPath(root string) string {
+	return filepath.Join(root, ".codex", "hooks.json")
 }
 
-func Install(path, executable string) (string, error) {
+func Install(path string) (string, error) {
 	root := map[string]any{}
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -36,8 +32,8 @@ func Install(path, executable string) (string, error) {
 	groups := arrayField(hooks, "PreToolUse")
 	handler := map[string]any{
 		"type":           "command",
-		"command":        shellCommand(executable),
-		"commandWindows": windowsCommand(executable),
+		"command":        "ebo " + adapterCommand,
+		"commandWindows": "ebo " + adapterCommand,
 		"timeout":        10,
 		"statusMessage":  "Checking Ebo pre-write authorization",
 	}
@@ -136,13 +132,4 @@ func managedHandler(handler map[string]any) bool {
 		}
 	}
 	return false
-}
-
-func shellCommand(executable string) string {
-	return "'" + strings.ReplaceAll(filepath.ToSlash(executable), "'", "'\\''") + "' " + adapterCommand
-}
-
-func windowsCommand(executable string) string {
-	escaped := strings.ReplaceAll(executable, `"`, `\"`)
-	return `"` + escaped + `" ` + adapterCommand
 }

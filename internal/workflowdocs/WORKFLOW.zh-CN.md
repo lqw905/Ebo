@@ -98,14 +98,16 @@ ebo hook pre-write --path <目标文件>
 
 该命令不调用 AI、不访问网络。退出码 `0` 表示本次写入允许，`1` 表示门禁拒绝，`2` 表示 Ebo 配置或运行状态损坏。Git pre-commit Hook 与 Agent pre-write Hook 相互独立：前者保护提交，后者保护工作区。
 
-Codex 可以安装全局 `PreToolUse` 适配器：
+Codex 可以在当前已初始化的 Ebo 项目中安装项目级 `PreToolUse` 适配器：
 
 ```bash
 ebo hooks install codex
 ebo hooks status codex
 ```
 
-安装后在 Codex 中打开 `/hooks`，审阅并信任新增定义。该 Hook 只拦截 `Edit`、`Write` 和 `apply_patch`，在未初始化 Ebo 的项目中自动放行；Shell 写文件仍需遵守本工作流，并由 Git Hook 和 CI 兜底。
+该命令只会合并写入当前项目的 `.codex/hooks.json`，不会修改用户目录下的 `~/.codex/hooks.json`。安装后在 Codex 中打开 `/hooks`，审阅并信任新增定义。该 Hook 只拦截 `Edit`、`Write` 和 `apply_patch`；Shell 写文件仍需遵守本工作流，并由 Git Hook 和 CI 兜底。
+
+安装 npm 包本身不会修改任何 Codex 配置或 Git Hook。只有用户在已初始化项目中显式运行上述安装命令，Ebo 才会写入项目级配置。
 
 然后输入给 Agent：
 
