@@ -45,9 +45,10 @@ func TestCLISmoke(t *testing.T) {
 	runCLI(t, nil, "init", "--agents", "none")
 	hookOutput := runCLI(t, nil, "hooks", "install", "codex")
 	hookPath := filepath.Join(root, ".codex", "hooks.json")
-	if !strings.Contains(hookOutput, hookPath) || !strings.Contains(hookOutput, "project-local hook") {
+	if !strings.Contains(hookOutput, "project-local hook") {
 		t.Fatalf("Codex hook install output = %s", hookOutput)
 	}
+	assertOutputFile(t, strings.SplitN(hookOutput, "\n", 2)[0], "installed ", hookPath)
 	hookData, err := os.ReadFile(hookPath)
 	if err != nil {
 		t.Fatal(err)
@@ -56,9 +57,7 @@ func TestCLISmoke(t *testing.T) {
 		t.Fatalf("Codex hook must be portable and project-local:\n%s", hookData)
 	}
 	hookStatus := runCLI(t, nil, "hooks", "status", "codex")
-	if !strings.Contains(hookStatus, "installed "+hookPath) {
-		t.Fatalf("Codex hook status = %s", hookStatus)
-	}
+	assertOutputFile(t, strings.TrimSpace(hookStatus), "installed ", hookPath)
 	writePrompt(t, root, project.RootID, rootPrompt)
 	writePrompt(t, root, "architecture.identity", identityPrompt)
 	writePrompt(t, root, "feature.login", loginPrompt)
@@ -186,6 +185,25 @@ func TestCLISmoke(t *testing.T) {
 	stagedGuard := runCLI(t, nil, "guard", "check", "--staged")
 	if !strings.Contains(stagedGuard, "guard: pass") || !strings.Contains(stagedGuard, planID[1]) {
 		t.Fatalf("staged guard output = %s", stagedGuard)
+	}
+}
+
+func assertOutputFile(t *testing.T, output, prefix, expectedPath string) {
+	t.Helper()
+	if !strings.HasPrefix(output, prefix) {
+		t.Fatalf("output %q does not start with %q", output, prefix)
+	}
+	actualPath := strings.TrimSpace(strings.TrimPrefix(output, prefix))
+	expectedInfo, err := os.Stat(expectedPath)
+	if err != nil {
+		t.Fatalf("stat expected path %q: %v", expectedPath, err)
+	}
+	actualInfo, err := os.Stat(actualPath)
+	if err != nil {
+		t.Fatalf("stat output path %q: %v", actualPath, err)
+	}
+	if !os.SameFile(expectedInfo, actualInfo) {
+		t.Fatalf("output path %q and expected path %q are not the same file", actualPath, expectedPath)
 	}
 }
 
