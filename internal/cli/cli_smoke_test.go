@@ -129,7 +129,9 @@ func TestInitIsolatesEboAndInstallsAgentWorkflow(t *testing.T) {
 		"## 4. 执行下一个 Prompt",
 		"输入给 Agent",
 		"ebo context <prompt-id> --depth 0",
-		"## 10. 从已有项目反向抽象 Prompt 树",
+		"## 5. 将对话沉淀为 Prompt 树",
+		"ebo add --dir drafts/ebo/<topic>/",
+		"## 11. 从已有项目反向抽象 Prompt 树",
 	} {
 		if !strings.Contains(string(workflowData), want) {
 			t.Fatalf("WORKFLOW.md does not contain %q:\n%s", want, workflowData)

@@ -74,7 +74,58 @@ ebo next
 ebo context <prompt-id> --depth 0
 ```
 
-## 5. 生成新的 Prompt
+## 5. 将对话沉淀为 Prompt 树
+
+用户可以先与 Agent 自由讨论需求、方案和边界。讨论内容不会自动进入 Prompt 树；只有用户明确要求“沉淀到 Ebo”或“更新 Prompt 树”时，Agent 才能创建草稿并运行 `ebo add`。
+
+讨论完成后，输入给 Agent：
+
+```text
+请把刚才的讨论沉淀到 Ebo Prompt 树。
+
+分析哪些内容应该新建 Prompt、修改已有 Prompt 或通过 supersedes 替代旧 Prompt，补全目标、上下文、验收条件、唯一 parent 和语义依赖。
+先查询相关 Prompt，只加载必要上下文。把本次讨论形成的完整 Markdown 写到独立目录 drafts/ebo/<topic>/。
+你可以先运行 ebo add --dry-run --dir drafts/ebo/<topic>/ 检查，再运行 ebo add --dir drafts/ebo/<topic>/ 创建一个 proposal。
+创建完成后告诉我 proposal ID、proposal hash、新增或修改的 Prompt、依赖变化和待确认问题。
+不要直接修改 .ebo/tree，不要运行 ebo approve 或 ebo apply。
+```
+
+Agent 应按需查询相关节点，并把同一次讨论产生的相关 Prompt 放入一个原子 proposal：
+
+```bash
+ebo tree search "<相关内容>"
+ebo context <相关-prompt-id> --depth 0
+ebo add --dry-run --dir drafts/ebo/<topic>/
+ebo add --dir drafts/ebo/<topic>/
+```
+
+如果本次讨论只产生一个 Prompt，也可以使用 `ebo add --file <path>`。Agent 创建 proposal 后必须停止；真正更新 `.ebo/tree/` 仍由用户执行 `review`、`approve` 和 `apply`。
+
+Agent 应向用户返回类似摘要：
+
+```text
+Proposal ID: <proposal-id>
+Proposal Hash: <proposal-hash>
+
+新增 Prompt：
+- <prompt-id>
+
+修改 Prompt：
+- <prompt-id>
+
+依赖变化：
+- <prompt-id> depends_on <prompt-id>
+
+待确认问题：
+- <问题>
+
+请人工运行：
+ebo review <proposal-id>
+ebo approve <proposal-id>
+ebo apply <proposal-id>
+```
+
+## 6. 生成新的 Prompt
 
 输入给 Agent：
 
@@ -89,7 +140,7 @@ ebo context <prompt-id> --depth 0
 <在这里填写需求>
 ```
 
-## 6. 修改已有 Prompt
+## 7. 修改已有 Prompt
 
 输入给 Agent：
 
@@ -104,7 +155,7 @@ ebo context <prompt-id> --depth 0
 <在这里填写修改内容>
 ```
 
-## 7. 人工审阅并加入 Prompt 树
+## 8. 人工审阅并加入 Prompt 树
 
 用户先把草稿登记为 proposal：
 
@@ -130,7 +181,7 @@ ebo apply <proposal-id>
 
 `ebo approve` 会要求用户在交互终端输入完整 proposal hash。只有通过这一步，Prompt 才能成为可执行工作。
 
-## 8. 继续已有执行计划
+## 9. 继续已有执行计划
 
 输入给 Agent：
 
@@ -142,7 +193,7 @@ ebo apply <proposal-id>
 不要预加载其他 Prompt。
 ```
 
-## 9. 处理失败或阻塞
+## 10. 处理失败或阻塞
 
 输入给 Agent：
 
@@ -154,7 +205,7 @@ ebo apply <proposal-id>
 完成后如实运行 ebo report，并运行 ebo verify <plan-id>。
 ```
 
-## 10. 从已有项目反向抽象 Prompt 树
+## 11. 从已有项目反向抽象 Prompt 树
 
 用户先生成项目证据：
 
@@ -172,7 +223,7 @@ ebo import . --out .ebo/runtime/import
 不要自动运行 ebo approve 或 ebo apply，生成后交给我逐项审阅。
 ```
 
-## 11. 完成任务并验证
+## 12. 完成任务并验证
 
 输入给 Agent：
 

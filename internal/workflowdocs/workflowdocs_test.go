@@ -27,6 +27,10 @@ func TestUpdateCreatesChineseWorkflow(t *testing.T) {
 		"输入给 Agent",
 		"只执行 ebo next 返回的单个任务",
 		"ebo context <prompt-id> --depth 0",
+		"## 5. 将对话沉淀为 Prompt 树",
+		"只有用户明确要求",
+		"ebo add --dry-run --dir drafts/ebo/<topic>/",
+		"Agent 创建 proposal 后必须停止",
 		"人工审阅并加入 Prompt 树",
 		"反向抽象 Prompt 树",
 	} {
