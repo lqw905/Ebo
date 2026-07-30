@@ -57,6 +57,24 @@ func TestReceiptsCompletePlanRequiresPassedReceiptForEveryTask(t *testing.T) {
 	}
 }
 
+func TestSourceChangeNamesIgnoresEboMetadata(t *testing.T) {
+	got := sourceChangeNames([]string{
+		".ebo/tree/project.md",
+		".prompt/tree/project.md",
+		".codex/hooks.json",
+		".claude/settings.json",
+		"drafts/ebo/login.md",
+		"AGENTS.md",
+		"CLAUDE.md",
+		".gitignore",
+		".gitattributes",
+		"internal/auth/service.go",
+	})
+	if len(got) != 1 || got[0] != "internal/auth/service.go" {
+		t.Fatalf("sourceChangeNames = %#v", got)
+	}
+}
+
 func TestPatchTargetPaths(t *testing.T) {
 	patch := "*** Begin Patch\n*** Update File: internal/auth/service.go\n*** Move to: internal/auth/login.go\n*** Add File: drafts/ebo/login.md\n*** End Patch"
 	got := patchTargetPaths(patch)

@@ -1644,11 +1644,11 @@ func projectRelativePath(root, target string) (string, error) {
 
 func protectedPreWritePath(path string) bool {
 	lower := strings.ToLower(filepath.ToSlash(path))
-	if lower == ".ebo" || lower == ".git" || lower == ".claude" || lower == ".codex" || strings.HasPrefix(lower, ".ebo/") || strings.HasPrefix(lower, ".git/") || strings.HasPrefix(lower, ".claude/") || strings.HasPrefix(lower, ".codex/") {
+	if metadataChangePath(lower) || lower == ".git" || strings.HasPrefix(lower, ".git/") {
 		return true
 	}
 	switch lower {
-	case ".gitignore", ".gitattributes", ".gitmodules", "agents.md", "claude.md":
+	case ".gitmodules":
 		return true
 	default:
 		return false
@@ -1726,20 +1726,33 @@ func sourceChangeNames(names []string) []string {
 	var out []string
 	for _, name := range names {
 		name = filepath.ToSlash(strings.TrimSpace(name))
-		lower := strings.ToLower(name)
-		switch {
-		case strings.HasPrefix(lower, ".ebo/"):
+		if metadataChangePath(name) || promptDraftPath(name) {
 			continue
-		case strings.HasPrefix(lower, "drafts/"):
-			continue
-		case lower == ".gitignore", lower == "agents.md", lower == "claude.md":
-			continue
-		default:
-			out = append(out, name)
 		}
+		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out
+}
+
+func metadataChangePath(path string) bool {
+	lower := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+	switch {
+	case lower == ".ebo", strings.HasPrefix(lower, ".ebo/"):
+		return true
+	case lower == ".prompt", strings.HasPrefix(lower, ".prompt/"):
+		return true
+	case lower == ".codex", strings.HasPrefix(lower, ".codex/"):
+		return true
+	case lower == ".claude", strings.HasPrefix(lower, ".claude/"):
+		return true
+	}
+	switch lower {
+	case ".gitignore", ".gitattributes", "agents.md", "claude.md":
+		return true
+	default:
+		return false
+	}
 }
 
 type receiptRecord struct {

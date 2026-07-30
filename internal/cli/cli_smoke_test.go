@@ -100,6 +100,9 @@ func TestCLISmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := os.WriteFile(hookPath, append(hookData, []byte("\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	nextOutput := runCLI(t, nil, "next", planID[1])
 	if !strings.Contains(nextOutput, "architecture.identity") {
 		t.Fatalf("next output = %s", nextOutput)
@@ -327,6 +330,40 @@ func TestNextRejectsPlanAfterGitHeadChanges(t *testing.T) {
 	output, code := runCLIResult(nil, "next", match[1])
 	if code == 0 || !strings.Contains(output, "reason: plan_base_commit_changed") {
 		t.Fatalf("next should reject stale plan, code=%d output=%s", code, output)
+	}
+}
+
+func TestStagedGuardAllowsMetadataOnly(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+	root := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+
+	git := exec.Command("git", "init")
+	git.Dir = root
+	if output, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, output)
+	}
+	runCLI(t, nil, "init", "--agents", "none")
+	commitAll(t, root, "baseline")
+	if err := os.MkdirAll(filepath.Join(root, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".codex", "hooks.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitAddAll(t, root)
+	output := runCLI(t, nil, "guard", "check", "--staged")
+	if !strings.Contains(output, "guard: pass") || !strings.Contains(output, "reason: no_staged_source_changes") {
+		t.Fatalf("metadata-only staged guard output = %s", output)
 	}
 }
 

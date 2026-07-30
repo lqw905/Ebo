@@ -1,6 +1,7 @@
 package gitx
 
 import (
+	"bytes"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -99,11 +100,15 @@ func run(root string, args ...string) (string, error) {
 	}
 	cmd := exec.Command("git", args...)
 	cmd.Dir = root
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(output), fmt.Errorf("git %s failed: %s", strings.Join(args, " "), strings.TrimSpace(string(output)))
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		output := strings.TrimSpace(stdout.String() + stderr.String())
+		return stdout.String(), fmt.Errorf("git %s failed: %s", strings.Join(args, " "), output)
 	}
-	return string(output), nil
+	return stdout.String(), nil
 }
 
 func nonEmptyLines(output string) []string {

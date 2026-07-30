@@ -30,6 +30,7 @@ EBO HARD GATE: NO EBO TASK, NO SOURCE EDIT.
 - Agent 不得运行 `ebo approve` 或 `ebo apply`。
 - Prompt 树执行依赖 Git 基线；没有至少一个 Git commit 时，`ebo plan` 和 `ebo next` 会拒绝执行。
 - 全新 plan 第一次执行前必须没有既存业务代码改动；否则 `ebo next` 会以 `preexisting_source_changes` 关闭门禁，防止先改代码再补任务。
+- Ebo 元数据不算业务代码改动：`.ebo/`、`.prompt/`、`.codex/`、`.claude/`、`AGENTS.md`、`CLAUDE.md` 和 Git 忽略/属性文件可以单独提交，不需要 completed plan；只有业务源码或构建文件提交时才必须匹配已完成计划。
 
 ## 2. Prompt 标记与执行资格
 
