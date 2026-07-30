@@ -16,7 +16,7 @@ const (
 const ManagedBlock = `<!-- EBO:START -->
 This block is managed by Ebo.
 
-Ebo manages the project's only Prompt Tree. Do not edit .ebo/tree/ directly.
+Ebo keeps project intent isolated under .ebo/. The canonical, version-controlled Prompt Tree is .ebo/tree/. Do not store prompts beside source code and do not edit .ebo/tree/ directly.
 
 When generating Prompt Markdown:
 1. Run ebo context <node-id>, ebo tree search, or ebo tree graph before drafting.
@@ -24,12 +24,17 @@ When generating Prompt Markdown:
 3. Every non-root prompt must declare exactly one parent.
 4. Identify depends_on, affects, implements, references, and supersedes links, and include a reason for each semantic link.
 5. Do not reference unknown prompt IDs. Keep uncertainty in Open Questions instead.
-6. Run ebo add only when the user explicitly asks. Never run ebo approve or ebo apply.
+6. Give the Markdown to the user, or run ebo add --file <path> only when the user explicitly asks.
+7. Never run ebo approve or ebo apply. Those commands require human review and approval.
 
 When executing code:
-1. Run ebo status, ebo scan, and ebo next.
-2. Implement only the task package and acceptance criteria Ebo provides.
-3. Report results with ebo report. Do not forge prompt state by editing .ebo/tree/.
+1. Run ebo status and ebo scan at the start of the task.
+2. Run ebo next to open or continue the active execution plan.
+3. Read the returned task package, then run ebo context <prompt-id> before changing code to inspect its dependencies and related prompts.
+4. Execute only prompts whose spec state is approved. Stop if Ebo returns no approved task.
+5. Implement one task package at a time and follow its acceptance criteria.
+6. Report the result with the exact ebo report command from the task package, then run ebo verify <plan-id>.
+7. Do not forge prompt state or hashes by editing .ebo/tree/.
 <!-- EBO:END -->
 `
 

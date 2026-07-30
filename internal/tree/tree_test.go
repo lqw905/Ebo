@@ -71,6 +71,32 @@ func TestApplyTaskResultRejectsStalePlanHash(t *testing.T) {
 	}
 }
 
+func TestExecutionOrderRequiresApprovalAndReadyDependencies(t *testing.T) {
+	root := t.TempDir()
+	if err := project.EnsureLayout(root); err != nil {
+		t.Fatal(err)
+	}
+	writePrompt(t, root, project.RootID, rootPromptFixture)
+	writePrompt(t, root, "architecture.draft", draftPromptFixture)
+	writePrompt(t, root, "feature.waiting", waitingPromptFixture)
+	writePrompt(t, root, "feature.hello", helloPromptFixture)
+
+	promptTree, err := LoadProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := promptTree.Validate(); len(issues) != 0 {
+		t.Fatalf("tree issues: %v", issues)
+	}
+	if dirty := promptTree.DirtyNodes(); len(dirty) != 3 {
+		t.Fatalf("dirty = %#v, want all three changed prompts", dirty)
+	}
+	order := promptTree.ExecutionOrder()
+	if len(order) != 1 || order[0] != "feature.hello" {
+		t.Fatalf("execution order = %#v, want only approved prompt with ready dependencies", order)
+	}
+}
+
 func writePrompt(t *testing.T, root, id, body string) {
 	t.Helper()
 	path, err := project.NodePathForID(project.NewPaths(root).TreeDir, id)
@@ -114,4 +140,40 @@ links:
 ---
 ## Intent
 Say hello.
+`
+
+const draftPromptFixture = `---
+schema: ebo.prompt/v1
+id: architecture.draft
+title: Draft Architecture
+kind: architecture
+parent: project.root
+state:
+  spec: draft
+  execution: not_started
+  sync: dirty
+links:
+  references: []
+---
+## Intent
+Remain pending until a human approves it.
+`
+
+const waitingPromptFixture = `---
+schema: ebo.prompt/v1
+id: feature.waiting
+title: Waiting Feature
+kind: feature
+parent: project.root
+state:
+  spec: approved
+  execution: not_started
+  sync: dirty
+links:
+  depends_on:
+    - id: architecture.draft
+      reason: the feature requires the draft architecture
+---
+## Intent
+Wait for the dependency to be approved.
 `

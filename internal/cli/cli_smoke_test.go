@@ -62,6 +62,54 @@ func TestCLISmoke(t *testing.T) {
 	}
 }
 
+func TestInitIsolatesEboAndInstallsAgentWorkflow(t *testing.T) {
+	root := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(originalWD)
+	})
+
+	const source = "package example\n"
+	sourcePath := filepath.Join(root, "example.go")
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCLI(t, nil, "init", "--agents", "codex,claude")
+
+	for _, path := range []string{
+		filepath.Join(root, ".ebo", "config.toml"),
+		filepath.Join(root, ".ebo", "tree", "project.md"),
+		filepath.Join(root, "AGENTS.md"),
+		filepath.Join(root, "CLAUDE.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected initialized file %s: %v", path, err)
+		}
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != source {
+		t.Fatalf("source file was changed: %q", data)
+	}
+	agentData, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ebo scan", "ebo next", "ebo context <prompt-id>", "spec state is approved"} {
+		if !strings.Contains(string(agentData), want) {
+			t.Fatalf("AGENTS.md does not contain %q:\n%s", want, agentData)
+		}
+	}
+}
+
 func runCLI(t *testing.T, in *bytes.Buffer, args ...string) string {
 	t.Helper()
 	var stdout bytes.Buffer

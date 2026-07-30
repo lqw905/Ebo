@@ -4,6 +4,24 @@ Ebo is a local CLI runtime for managing a project Prompt Tree. It does not call 
 
 This repository currently contains the first MVP slice.
 
+## Project Isolation
+
+`ebo init` keeps project intent under one `.ebo/` namespace instead of scattering Prompt files through application source directories:
+
+```text
+.ebo/
+  tree/       canonical, version-controlled Prompt Tree
+  proposals/  Prompt changes waiting for human review
+  plans/      execution plans
+  receipts/   execution evidence
+  runtime/    generated context and imports
+  cache/      ignored local cache
+  locks/      ignored process locks
+  tmp/        ignored temporary files
+```
+
+It also installs a small managed block in `AGENTS.md` and, when requested, `CLAUDE.md`. The block tells an agent to run `ebo status`, `ebo scan`, `ebo next`, and `ebo context <prompt-id>` before implementation. Only Prompt proposals that pass hash-bound human approval can enter the tree as executable work.
+
 ## Build
 
 ```bash

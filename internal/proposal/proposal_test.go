@@ -69,6 +69,16 @@ Say hello.
 	if loaded.Nodes["feature.hello"] == nil {
 		t.Fatal("feature.hello was not applied")
 	}
+	prompt := loaded.Nodes["feature.hello"]
+	if prompt.State.Spec != "approved" {
+		t.Fatalf("spec = %q, want approved", prompt.State.Spec)
+	}
+	if prompt.State.Execution != "not_started" || prompt.State.Sync != "dirty" {
+		t.Fatalf("execution state = %q/%q, want not_started/dirty", prompt.State.Execution, prompt.State.Sync)
+	}
+	if prompt.Hash.Satisfied != "" {
+		t.Fatalf("satisfied hash = %q, want empty", prompt.Hash.Satisfied)
+	}
 	target := filepath.Join(project.NewPaths(root).TreeDir, "feature", "hello.md")
 	if _, err := os.Stat(target); err != nil {
 		t.Fatalf("expected applied prompt at %s: %v", target, err)

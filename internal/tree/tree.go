@@ -229,9 +229,45 @@ func (t *Tree) DirtyNodes() []string {
 }
 
 func (t *Tree) ExecutionOrder() []string {
-	dirtySet := map[string]bool{}
+	allDirty := map[string]bool{}
 	for _, id := range t.DirtyNodes() {
-		dirtySet[id] = true
+		allDirty[id] = true
+	}
+	readyMemo := map[string]bool{}
+	checked := map[string]bool{}
+	checking := map[string]bool{}
+	var ready func(string) bool
+	ready = func(id string) bool {
+		if !allDirty[id] {
+			return true
+		}
+		if checked[id] {
+			return readyMemo[id]
+		}
+		if checking[id] {
+			return false
+		}
+		checking[id] = true
+		prompt := t.Nodes[id]
+		isReady := prompt != nil && prompt.State.Spec == "approved"
+		if isReady {
+			for _, link := range prompt.Links["depends_on"] {
+				if allDirty[link.ID] && !ready(link.ID) {
+					isReady = false
+					break
+				}
+			}
+		}
+		delete(checking, id)
+		checked[id] = true
+		readyMemo[id] = isReady
+		return isReady
+	}
+	dirtySet := map[string]bool{}
+	for id := range allDirty {
+		if ready(id) {
+			dirtySet[id] = true
+		}
 	}
 	visited := map[string]bool{}
 	visiting := map[string]bool{}

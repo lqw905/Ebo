@@ -195,7 +195,7 @@ func Apply(root, id string) (*Meta, error) {
 	if meta.Status != "approved" {
 		return nil, fmt.Errorf("proposal %s is %s; approve it first", id, meta.Status)
 	}
-	actual, prompts, sourceData, err := rebuildFromStored(root, meta)
+	actual, prompts, _, err := rebuildFromStored(root, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -213,12 +213,13 @@ func Apply(root, id string) (*Meta, error) {
 	if err := project.CopyDir(paths.TreeDir, candidateTree); err != nil {
 		return nil, err
 	}
-	for i, prompt := range prompts {
+	for _, prompt := range prompts {
 		target, err := project.NodePathForID(candidateTree, prompt.ID)
 		if err != nil {
 			return nil, err
 		}
-		if err := project.WriteFileAtomic(target, sourceData[i], 0o644); err != nil {
+		approvedData := approvedPromptData(prompt)
+		if err := project.WriteFileAtomic(target, approvedData, 0o644); err != nil {
 			return nil, err
 		}
 	}
@@ -239,6 +240,16 @@ func Apply(root, id string) (*Meta, error) {
 	}
 	_ = os.RemoveAll(applyRoot)
 	return meta, nil
+}
+
+func approvedPromptData(prompt *document.Prompt) []byte {
+	prompt.State.Spec = "approved"
+	prompt.State.Execution = "not_started"
+	prompt.State.Sync = "dirty"
+	prompt.Hash.Content = ""
+	prompt.Hash.Effective = ""
+	prompt.Hash.Satisfied = ""
+	return document.RenderPrompt(prompt)
 }
 
 func buildMeta(sources []Source, now time.Time) (*Meta, []*document.Prompt, error) {
