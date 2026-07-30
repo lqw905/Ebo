@@ -25,10 +25,16 @@ type Prompt struct {
 	Confidence string
 	State      State
 	Hash       Hashes
+	Scope      Scope
 	Links      map[string][]Link
 	Body       string
 	Source     string
 	Raw        []byte
+}
+
+type Scope struct {
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
 }
 
 type State struct {
@@ -81,6 +87,7 @@ func ParsePrompt(data []byte, source string) (*Prompt, error) {
 
 	var section string
 	var linkType string
+	var scopeList string
 	linkIndex := -1
 
 	for lineNo, raw := range lines[1:end] {
@@ -89,6 +96,19 @@ func ParsePrompt(data []byte, source string) (*Prompt, error) {
 		}
 		indent := leadingSpaces(raw)
 		trimmed := strings.TrimSpace(raw)
+		if section == "scope" && indent >= 4 && scopeList != "" && strings.HasPrefix(trimmed, "- ") {
+			pattern := parseScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
+			if pattern == "" {
+				return nil, fmt.Errorf("%s front matter line %d has an empty scope pattern", source, lineNo+2)
+			}
+			switch scopeList {
+			case "allow":
+				p.Scope.Allow = append(p.Scope.Allow, pattern)
+			case "deny":
+				p.Scope.Deny = append(p.Scope.Deny, pattern)
+			}
+			continue
+		}
 		key, value, ok := splitYAMLKeyValue(trimmed)
 		if !ok {
 			return nil, fmt.Errorf("%s front matter line %d is not supported by the MVP parser: %s", source, lineNo+2, trimmed)
@@ -98,6 +118,7 @@ func ParsePrompt(data []byte, source string) (*Prompt, error) {
 		case indent == 0:
 			section = ""
 			linkType = ""
+			scopeList = ""
 			linkIndex = -1
 			if value == "" && strings.HasSuffix(trimmed, ":") {
 				section = key
@@ -110,6 +131,16 @@ func ParsePrompt(data []byte, source string) (*Prompt, error) {
 			setState(&p.State, key, value)
 		case section == "hash" && indent >= 2:
 			setHash(&p.Hash, key, value)
+		case section == "scope" && indent == 2:
+			if key != "allow" && key != "deny" {
+				return nil, fmt.Errorf("%s front matter line %d has unknown scope field %q", source, lineNo+2, key)
+			}
+			_, rawValue, _ := strings.Cut(trimmed, ":")
+			rawValue = strings.TrimSpace(rawValue)
+			if rawValue != "" && rawValue != "[]" {
+				return nil, fmt.Errorf("%s front matter line %d scope.%s must be a list", source, lineNo+2, key)
+			}
+			scopeList = key
 		case section == "links" && indent == 2:
 			linkType = key
 			linkIndex = -1
@@ -174,6 +205,11 @@ func ValidateBasic(p *Prompt) []string {
 			}
 		}
 	}
+	for _, pattern := range append(append([]string{}, p.Scope.Allow...), p.Scope.Deny...) {
+		if issue := validateScopePattern(pattern); issue != "" {
+			issues = append(issues, fmt.Sprintf("%s: invalid scope pattern %q: %s", p.Source, pattern, issue))
+		}
+	}
 	return issues
 }
 
@@ -211,6 +247,11 @@ func ContentHash(p *Prompt) string {
 		}
 		return links[i].Reason < links[j].Reason
 	})
+	var scope *Scope
+	if len(p.Scope.Allow) > 0 || len(p.Scope.Deny) > 0 {
+		copy := p.Scope
+		scope = &copy
+	}
 	canonical := struct {
 		Schema     string `json:"schema"`
 		ID         string `json:"id"`
@@ -220,6 +261,7 @@ func ContentHash(p *Prompt) string {
 		Revision   int    `json:"revision,omitempty"`
 		Origin     string `json:"origin,omitempty"`
 		Confidence string `json:"confidence,omitempty"`
+		Scope      *Scope `json:"scope,omitempty"`
 		Links      []Link `json:"links,omitempty"`
 		Body       string `json:"body"`
 	}{
@@ -231,6 +273,7 @@ func ContentHash(p *Prompt) string {
 		Revision:   p.Revision,
 		Origin:     p.Origin,
 		Confidence: p.Confidence,
+		Scope:      scope,
 		Links:      links,
 		Body:       normalizeNewlines(p.Body),
 	}
@@ -273,6 +316,11 @@ func RenderPrompt(p *Prompt) []byte {
 		writeIndentedScalar(&b, "content", p.Hash.Content)
 		writeIndentedScalar(&b, "effective", p.Hash.Effective)
 		writeIndentedScalar(&b, "satisfied", p.Hash.Satisfied)
+	}
+	if len(p.Scope.Allow) > 0 || len(p.Scope.Deny) > 0 {
+		fmt.Fprintln(&b, "scope:")
+		writeStringList(&b, "allow", p.Scope.Allow)
+		writeStringList(&b, "deny", p.Scope.Deny)
 	}
 	fmt.Fprintln(&b, "links:")
 	linkTypes := make([]string, 0, len(p.Links))
@@ -317,6 +365,34 @@ func writeScalar(b *strings.Builder, key, value string) {
 
 func writeIndentedScalar(b *strings.Builder, key, value string) {
 	fmt.Fprintf(b, "  %s: %s\n", key, yamlScalar(value))
+}
+
+func writeStringList(b *strings.Builder, key string, values []string) {
+	if len(values) == 0 {
+		fmt.Fprintf(b, "  %s: []\n", key)
+		return
+	}
+	fmt.Fprintf(b, "  %s:\n", key)
+	for _, value := range values {
+		fmt.Fprintf(b, "    - %s\n", yamlScalar(value))
+	}
+}
+
+func validateScopePattern(pattern string) string {
+	pattern = strings.TrimSpace(strings.ReplaceAll(pattern, "\\", "/"))
+	pattern = strings.TrimPrefix(pattern, "./")
+	if pattern == "" {
+		return "pattern is empty"
+	}
+	if strings.HasPrefix(pattern, "/") || regexp.MustCompile(`^[A-Za-z]:`).MatchString(pattern) {
+		return "pattern must be relative to the project root"
+	}
+	for _, part := range strings.Split(pattern, "/") {
+		if part == ".." {
+			return "pattern cannot traverse outside the project"
+		}
+	}
+	return ""
 }
 
 func yamlScalar(value string) string {

@@ -17,7 +17,8 @@ EBO HARD GATE: NO EBO TASK, NO SOURCE EDIT.
 - `ebo next` 输出 `CLOSED` 或没有任务时，Agent 必须停止业务代码修改。
 - 此时如果用户提出代码变更，视为授权 Agent 生成草稿并运行 `ebo add` 创建 proposal，但不代表授权 `approve` 或 `apply`。
 - proposal 创建后 Agent 必须停止，等用户人工审批和应用；再次获得 `OPEN` 后才能实现。
-- 修改代码前运行 `ebo guard check`，结果不是 `guard: pass` 和 `OPEN` 时不得继续。
+- 每次调用 Write、Edit、Patch 或其他文件写入工具前运行 `ebo hook pre-write --path <目标文件>`；只有退出码为 `0` 且返回 `EBO PRE-WRITE: ALLOWED` 才能写入。
+- `drafts/**/*.md` 是唯一不需要 OPEN active task 的 Agent 写入区域，仅用于 proposal 草稿，并不授予业务源码修改权限。
 
 ## 1. Ebo 的职责边界
 
@@ -41,7 +42,14 @@ state:
   sync: dirty
 hash:
   satisfied: ""
+scope:
+  allow:
+    - internal/auth/**
+  deny:
+    - internal/auth/secrets/**
 ```
+
+`scope` 可选。不填写 `allow` 时，活动任务可以修改除 Ebo、Git 和 Agent 控制文件外的业务文件；填写后，pre-write Hook 只放行匹配路径。`deny` 始终优先，支持 `*`、`?` 和跨目录的 `**`。
 
 | 标记或条件 | Ebo 与 Agent 的行为 |
 | --- | --- |
@@ -54,6 +62,7 @@ hash:
 | `ebo scan` 返回任务 | 仅供查看，门禁仍为 CLOSED |
 | `ebo next` 返回 OPEN | 获得一个活动任务，可以修改业务代码 |
 | `ebo next` 返回 CLOSED | 立即停止，不读取或修改业务代码 |
+| 目标文件不匹配 `scope.allow` 或命中 `scope.deny` | pre-write Hook 拒绝写入 |
 
 执行资格由 Ebo 计算。Agent 不得通过遍历 `.ebo/tree/` 自行判断任务，也不得预加载无关分支。任何时候都只执行 `ebo next` 返回的一个任务。
 
@@ -81,6 +90,14 @@ ebo hooks install
 ebo hooks status
 ```
 
+Agent 平台的写文件前 Hook 应调用：
+
+```bash
+ebo hook pre-write --path <目标文件>
+```
+
+该命令不调用 AI、不访问网络。退出码 `0` 表示本次写入允许，`1` 表示门禁拒绝，`2` 表示 Ebo 配置或运行状态损坏。Git pre-commit Hook 与 Agent pre-write Hook 相互独立：前者保护提交，后者保护工作区。
+
 然后输入给 Agent：
 
 ```text
@@ -97,7 +114,7 @@ ebo hooks status
 
 先运行 ebo status、ebo scan 和 ebo next。
 注意 ebo scan 不授予执行权限。只有 ebo next 返回 EBO EXECUTION GATE: OPEN 后，才能执行它返回的单个任务。
-随后运行 ebo guard check；结果不是 OPEN 时立即停止。
+随后针对每个准备写入的文件运行 ebo hook pre-write --path <目标文件>；结果不是 ALLOWED 时立即停止。
 选中任务后运行 ebo context <prompt-id> --depth 0，只读取当前 Prompt 和直接语义链接。
 完成后使用任务包给出的 ebo report 命令报告结果，并运行 ebo verify <plan-id>。
 ```
@@ -108,7 +125,7 @@ Agent 应依次运行：
 ebo status
 ebo scan
 ebo next
-ebo guard check
+ebo hook pre-write --path <目标文件>
 ebo context <prompt-id> --depth 0
 ```
 

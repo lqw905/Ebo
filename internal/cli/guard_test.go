@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/lqw905/Ebo/internal/planner"
@@ -51,5 +52,20 @@ func TestReceiptsCompletePlanRequiresPassedReceiptForEveryTask(t *testing.T) {
 	receipts[1].EffectiveHash = "tampered"
 	if receiptsCompletePlan(receipts, plan) {
 		t.Fatal("hash-mismatched receipt must not satisfy staged guard")
+	}
+}
+
+func TestProjectRelativePathUsesProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	got, err := projectRelativePath(root, filepath.Join("internal", "auth", "service.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "internal/auth/service.go" {
+		t.Fatalf("projectRelativePath = %q", got)
+	}
+	outside := filepath.Join(filepath.Dir(root), "outside.go")
+	if _, err := projectRelativePath(root, outside); err == nil {
+		t.Fatal("absolute path outside the project should be rejected")
 	}
 }

@@ -86,6 +86,8 @@ ebo import . --out .ebo/runtime/import
 ebo lock status
 ebo guard check
 ebo guard check --staged
+ebo hook pre-write --path <file>
+ebo hook pre-write --path <file> --json
 ebo hooks install
 ebo hooks status
 ```
@@ -111,6 +113,8 @@ ebo hooks status
 - Fail-closed execution gate with one ignored `.ebo/runtime/active-task.json` lease.
 - Git baseline enforcement before planning or execution.
 - `ebo guard check` for working-tree authorization and staged-plan validation.
+- Strict Agent pre-write decisions with deterministic exit codes and optional JSON output.
+- Optional Prompt `scope.allow` and `scope.deny` globs for file-level write authorization.
 - Optional managed pre-commit hook installed with `ebo hooks install`.
 - Conservative `commit` orchestration for completed plans.
 - Basic evidence package export for reverse import workflows.
@@ -122,6 +126,7 @@ ebo hooks status
 - Full Cobra-based command layer.
 - Full YAML 1.2 parser integration and JSON Schema validation.
 - Automatic staging of implementation code for one plan per commit.
+- Automatic installation of Agent-specific native pre-write adapters; Agent runtimes can call `ebo hook pre-write` today.
 - npm Trusted Publishing must be configured on npm before the release workflow can publish packages.
 
 ## Release

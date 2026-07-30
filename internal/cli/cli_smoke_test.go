@@ -49,6 +49,18 @@ func TestCLISmoke(t *testing.T) {
 	if strings.Contains(exportOutput, "source_edit: allowed") || !strings.Contains(exportOutput, "不授予源码修改权限") {
 		t.Fatalf("export must not grant execution permission: %s", exportOutput)
 	}
+	deniedOutput, deniedCode := runCLIResult(nil, "hook", "pre-write", "--path", "internal/auth/service.go")
+	if deniedCode != 1 || !strings.Contains(deniedOutput, "EBO PRE-WRITE: DENIED") || !strings.Contains(deniedOutput, "reason: no_active_task") {
+		t.Fatalf("pre-write without active task should be denied, code=%d output=%s", deniedCode, deniedOutput)
+	}
+	draftOutput := runCLI(t, nil, "hook", "pre-write", "--path", "drafts/ebo/login/prompt.md")
+	if !strings.Contains(draftOutput, "mode: proposal_draft") || !strings.Contains(draftOutput, "source_edit: forbidden") {
+		t.Fatalf("Prompt draft should be allowed without opening source gate: %s", draftOutput)
+	}
+	protectedOutput, protectedCode := runCLIResult(nil, "hook", "pre-write", "--path", ".ebo/tree/project.md")
+	if protectedCode != 1 || !strings.Contains(protectedOutput, "reason: protected_control_path") {
+		t.Fatalf("direct Ebo control edit should be denied, code=%d output=%s", protectedCode, protectedOutput)
+	}
 	preexisting := filepath.Join(root, "preexisting.txt")
 	if err := os.WriteFile(preexisting, []byte("not authorized yet\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -68,9 +80,31 @@ func TestCLISmoke(t *testing.T) {
 	if !strings.Contains(nextOutput, "EBO EXECUTION GATE: OPEN") {
 		t.Fatalf("next did not open execution gate: %s", nextOutput)
 	}
+	preWriteOutput := runCLI(t, nil, "hook", "pre-write", "--path", "internal/auth/service.go", "--json")
+	if !strings.Contains(preWriteOutput, `"allowed":true`) || !strings.Contains(preWriteOutput, `"gate":"open"`) || !strings.Contains(preWriteOutput, `"path":"internal/auth/service.go"`) {
+		t.Fatalf("active pre-write decision = %s", preWriteOutput)
+	}
+	outOfScopeOutput, outOfScopeCode := runCLIResult(nil, "hook", "pre-write", "--path", "internal/payment/service.go")
+	if outOfScopeCode != 1 || !strings.Contains(outOfScopeOutput, "reason: path_outside_prompt_scope") {
+		t.Fatalf("out-of-scope write should be denied, code=%d output=%s", outOfScopeCode, outOfScopeOutput)
+	}
 	activePath := filepath.Join(root, ".ebo", "runtime", "active-task.json")
 	if _, err := os.Stat(activePath); err != nil {
 		t.Fatalf("active task was not created: %v", err)
+	}
+	activeData, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activePath, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	brokenOutput, brokenCode := runCLIResult(nil, "hook", "pre-write", "--path", "internal/auth/service.go")
+	if brokenCode != 2 || !strings.Contains(brokenOutput, "reason: active_task_unreadable") {
+		t.Fatalf("unreadable active task should be a hook configuration error, code=%d output=%s", brokenCode, brokenOutput)
+	}
+	if err := os.WriteFile(activePath, activeData, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	repeatedNext := runCLI(t, nil, "next")
 	if !strings.Contains(repeatedNext, "architecture.identity") || !strings.Contains(repeatedNext, "EBO EXECUTION GATE: OPEN") {
@@ -182,7 +216,7 @@ func TestInitIsolatesEboAndInstallsAgentWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{".ebo/WORKFLOW.md", "EBO HARD GATE: NO EBO TASK, NO SOURCE EDIT", "只有 ebo next 返回 EBO EXECUTION GATE: OPEN", "Agent 不得执行"} {
+	for _, want := range []string{".ebo/WORKFLOW.md", "EBO HARD GATE: NO EBO TASK, NO SOURCE EDIT", "只有 ebo next 返回 EBO EXECUTION GATE: OPEN", "ebo hook pre-write --path <目标文件>", "Agent 不得执行"} {
 		if !strings.Contains(string(agentData), want) {
 			t.Fatalf("AGENTS.md does not contain %q:\n%s", want, agentData)
 		}
@@ -345,6 +379,11 @@ state:
   spec: approved
   execution: not_started
   sync: dirty
+scope:
+  allow:
+    - internal/auth/**
+  deny:
+    - internal/auth/secrets/**
 links:
   references: []
 ---

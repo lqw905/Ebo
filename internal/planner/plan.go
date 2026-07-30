@@ -263,6 +263,18 @@ func TaskPackage(plan *Plan, prompt *document.Prompt, task *Task) string {
 		fmt.Fprintln(&b, strings.TrimSpace(prompt.Body))
 		fmt.Fprintln(&b)
 	}
+	fmt.Fprintln(&b, "# WRITE SCOPE")
+	if len(prompt.Scope.Allow) == 0 {
+		fmt.Fprintln(&b, "- allow: all source paths except protected Ebo, Git, and Agent control files")
+	} else {
+		for _, pattern := range prompt.Scope.Allow {
+			fmt.Fprintf(&b, "- allow: %s\n", pattern)
+		}
+	}
+	for _, pattern := range prompt.Scope.Deny {
+		fmt.Fprintf(&b, "- deny: %s\n", pattern)
+	}
+	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "# LINKS")
 	wroteLinks := false
 	for _, typ := range sortedLinkTypes(prompt.Links) {

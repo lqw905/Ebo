@@ -21,6 +21,7 @@ import (
 	"github.com/lqw905/Ebo/internal/githooks"
 	"github.com/lqw905/Ebo/internal/gitx"
 	"github.com/lqw905/Ebo/internal/lockfile"
+	"github.com/lqw905/Ebo/internal/pathscope"
 	"github.com/lqw905/Ebo/internal/planner"
 	"github.com/lqw905/Ebo/internal/project"
 	"github.com/lqw905/Ebo/internal/proposal"
@@ -89,6 +90,8 @@ func Execute(args []string, in io.Reader, out, errOut io.Writer) int {
 		err = runCommit(args[1:], out)
 	case "guard":
 		err = runGuard(args[1:], out)
+	case "hook":
+		err = runHook(args[1:], out)
 	case "hooks":
 		err = runHooks(args[1:], out)
 	default:
@@ -96,6 +99,10 @@ func Execute(args []string, in io.Reader, out, errOut io.Writer) int {
 	}
 	if err != nil {
 		fmt.Fprintln(errOut, "error:", err)
+		var coded interface{ ExitCode() int }
+		if errors.As(err, &coded) {
+			return coded.ExitCode()
+		}
 		return 1
 	}
 	return 0
@@ -120,6 +127,7 @@ Usage:
   ebo report <task-id> [--plan <plan-id>] --result passed|failed|blocked [--note "..."]
   ebo commit <plan-id> [--dry-run] [--message "..."]
   ebo guard check [--staged]
+  ebo hook pre-write --path <file> [--json]
   ebo hooks (install | status)
   ebo import <path> [--out <dir>] [--dry-run]
   ebo lock status
@@ -1347,6 +1355,219 @@ func runGuard(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "- %s\n", name)
 	}
 	return fmt.Errorf("%d source change(s) exist without an active Ebo task", len(sourceNames))
+}
+
+type commandExitError struct {
+	code int
+	err  error
+}
+
+func (e *commandExitError) Error() string {
+	return e.err.Error()
+}
+
+func (e *commandExitError) Unwrap() error {
+	return e.err
+}
+
+func (e *commandExitError) ExitCode() int {
+	return e.code
+}
+
+type preWriteResult struct {
+	Schema   string `json:"schema"`
+	Hook     string `json:"hook"`
+	Allowed  bool   `json:"allowed"`
+	Gate     string `json:"gate"`
+	Mode     string `json:"mode"`
+	Path     string `json:"path,omitempty"`
+	Reason   string `json:"reason"`
+	Action   string `json:"action,omitempty"`
+	PlanID   string `json:"plan_id,omitempty"`
+	TaskID   string `json:"task_id,omitempty"`
+	PromptID string `json:"prompt_id,omitempty"`
+}
+
+func runHook(args []string, out io.Writer) error {
+	if len(args) == 0 || args[0] != "pre-write" {
+		return fmt.Errorf("usage: ebo hook pre-write --path <file> [--json]")
+	}
+	fs := newFlagSet("hook pre-write", io.Discard)
+	target := fs.String("path", "", "project-relative file path that the Agent intends to write")
+	jsonOutput := fs.Bool("json", false, "emit a structured hook decision")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(*target) == "" {
+		return fmt.Errorf("usage: ebo hook pre-write --path <file> [--json]")
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return &commandExitError{code: 2, err: err}
+	}
+	rel, err := projectRelativePath(root, *target)
+	if err != nil {
+		result := preWriteResult{
+			Schema:  "ebo.hook-result/v1",
+			Hook:    "pre-write",
+			Allowed: false,
+			Gate:    "closed",
+			Mode:    "source",
+			Reason:  "invalid_target_path",
+			Action:  "provide a file path inside the Ebo project",
+		}
+		emitPreWriteResult(out, result, *jsonOutput)
+		return &commandExitError{code: 1, err: err}
+	}
+	if protectedPreWritePath(rel) {
+		result := preWriteResult{
+			Schema:  "ebo.hook-result/v1",
+			Hook:    "pre-write",
+			Allowed: false,
+			Gate:    "closed",
+			Mode:    "control",
+			Path:    rel,
+			Reason:  "protected_control_path",
+			Action:  "use the owning Ebo or Git command instead of editing this file directly",
+		}
+		emitPreWriteResult(out, result, *jsonOutput)
+		return &commandExitError{code: 1, err: fmt.Errorf("pre-write denied for protected control path %s", rel)}
+	}
+	if promptDraftPath(rel) {
+		result := preWriteResult{
+			Schema:  "ebo.hook-result/v1",
+			Hook:    "pre-write",
+			Allowed: true,
+			Gate:    "closed",
+			Mode:    "proposal_draft",
+			Path:    rel,
+			Reason:  "prompt_draft_allowed",
+			Action:  "run ebo add to create a proposal, then wait for human approval",
+		}
+		emitPreWriteResult(out, result, *jsonOutput)
+		return nil
+	}
+
+	active, err := execution.Load(root)
+	if errors.Is(err, execution.ErrNoActiveTask) {
+		result := preWriteResult{
+			Schema:  "ebo.hook-result/v1",
+			Hook:    "pre-write",
+			Allowed: false,
+			Gate:    "closed",
+			Mode:    "source",
+			Path:    rel,
+			Reason:  "no_active_task",
+			Action:  "run ebo next and require EBO EXECUTION GATE: OPEN before writing source code",
+		}
+		emitPreWriteResult(out, result, *jsonOutput)
+		return &commandExitError{code: 1, err: fmt.Errorf("pre-write denied: no active Ebo task")}
+	}
+	if err != nil {
+		result := preWriteResult{Schema: "ebo.hook-result/v1", Hook: "pre-write", Allowed: false, Gate: "closed", Mode: "source", Path: rel, Reason: "active_task_unreadable", Action: "inspect the runtime state and abort the affected plan"}
+		emitPreWriteResult(out, result, *jsonOutput)
+		return &commandExitError{code: 2, err: err}
+	}
+	plan, task, err := validateActiveTask(root, active)
+	if err != nil {
+		result := preWriteResult{Schema: "ebo.hook-result/v1", Hook: "pre-write", Allowed: false, Gate: "closed", Mode: "source", Path: rel, Reason: "active_task_invalid", Action: "resolve or abort the active plan before writing source code"}
+		emitPreWriteResult(out, result, *jsonOutput)
+		return &commandExitError{code: 2, err: err}
+	}
+	promptTree, err := tree.LoadProject(root)
+	if err != nil {
+		return &commandExitError{code: 2, err: err}
+	}
+	prompt := promptTree.Nodes[task.PromptID]
+	allowed, reason := pathscope.Allows(prompt.Scope, rel)
+	result := preWriteResult{
+		Schema:   "ebo.hook-result/v1",
+		Hook:     "pre-write",
+		Allowed:  allowed,
+		Gate:     "open",
+		Mode:     "source",
+		Path:     rel,
+		Reason:   reason,
+		PlanID:   plan.ID,
+		TaskID:   task.ID,
+		PromptID: task.PromptID,
+	}
+	if !allowed {
+		result.Gate = "closed"
+		result.Action = "only write files included by the active Prompt scope"
+		emitPreWriteResult(out, result, *jsonOutput)
+		return &commandExitError{code: 1, err: fmt.Errorf("pre-write denied: %s is outside the active Prompt scope", rel)}
+	}
+	emitPreWriteResult(out, result, *jsonOutput)
+	return nil
+}
+
+func emitPreWriteResult(out io.Writer, result preWriteResult, jsonOutput bool) {
+	if jsonOutput {
+		data, _ := json.Marshal(result)
+		fmt.Fprintln(out, string(data))
+		return
+	}
+	if result.Allowed {
+		fmt.Fprintln(out, "EBO PRE-WRITE: ALLOWED")
+	} else {
+		fmt.Fprintln(out, "EBO PRE-WRITE: DENIED")
+	}
+	fmt.Fprintf(out, "EBO EXECUTION GATE: %s\n", strings.ToUpper(result.Gate))
+	if result.Mode == "source" && result.Allowed {
+		fmt.Fprintln(out, "source_edit: allowed")
+	} else {
+		fmt.Fprintln(out, "source_edit: forbidden")
+	}
+	fmt.Fprintf(out, "mode: %s\n", result.Mode)
+	if result.Path != "" {
+		fmt.Fprintf(out, "path: %s\n", result.Path)
+	}
+	fmt.Fprintf(out, "reason: %s\n", result.Reason)
+	if result.PlanID != "" {
+		fmt.Fprintf(out, "plan: %s\ntask: %s\nprompt: %s\n", result.PlanID, result.TaskID, result.PromptID)
+	}
+	if result.Action != "" {
+		fmt.Fprintf(out, "action: %s\n", result.Action)
+	}
+}
+
+func projectRelativePath(root, target string) (string, error) {
+	abs := target
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(root, abs)
+	}
+	abs, err := filepath.Abs(abs)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return "", err
+	}
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("target %s is outside the project", target)
+	}
+	return rel, nil
+}
+
+func protectedPreWritePath(path string) bool {
+	lower := strings.ToLower(filepath.ToSlash(path))
+	if lower == ".ebo" || lower == ".git" || lower == ".claude" || lower == ".codex" || strings.HasPrefix(lower, ".ebo/") || strings.HasPrefix(lower, ".git/") || strings.HasPrefix(lower, ".claude/") || strings.HasPrefix(lower, ".codex/") {
+		return true
+	}
+	switch lower {
+	case ".gitignore", ".gitattributes", ".gitmodules", "agents.md", "claude.md":
+		return true
+	default:
+		return false
+	}
+}
+
+func promptDraftPath(path string) bool {
+	lower := strings.ToLower(filepath.ToSlash(path))
+	return strings.HasPrefix(lower, "drafts/") && strings.HasSuffix(lower, ".md")
 }
 
 func runHooks(args []string, out io.Writer) error {
