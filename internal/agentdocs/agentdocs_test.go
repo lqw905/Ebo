@@ -53,6 +53,8 @@ func TestSilentBlockDirectsAgentToSelfApprove(t *testing.T) {
 		"依次运行 ebo add、ebo approve、ebo apply、ebo next 和 ebo report",
 		"静默模式下 ebo approve 自动通过",
 		"静默模式不强制提交",
+		"每个计划完成后也不会自动提交",
+		"用户想什么时候提交就什么时候提交",
 		"只发生在 report 完成后、门禁关闭时",
 		"git add -A 与 git commit",
 		"默认只校订用户原话",

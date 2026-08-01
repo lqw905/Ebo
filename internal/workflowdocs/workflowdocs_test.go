@@ -73,6 +73,9 @@ func TestSilentModeAddsBanner(t *testing.T) {
 		"依次运行 ebo add、ebo approve、ebo apply、ebo next 和 ebo report",
 		"改为 Agent 自动执行",
 		"提交时机：静默模式不强制提交",
+		"每个计划完成后也不会自动提交",
+		"第 12 节的 ebo commit 流程",
+		"用户想什么时候提交就什么时候提交",
 		"只发生在 report 完成后、门禁关闭时",
 		"普通 git add -A 与 git commit",
 	} {

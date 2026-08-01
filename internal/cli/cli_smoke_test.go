@@ -781,3 +781,62 @@ func TestAddAndReviewShowUserRequest(t *testing.T) {
 		t.Fatalf("review must show the prompt body next to the request:\n%s", reviewOut)
 	}
 }
+
+func TestSilentModeIgnoresStaleBaseCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+	root := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+
+	git := exec.Command("git", "init")
+	git.Dir = root
+	if output, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, output)
+	}
+	runCLI(t, nil, "init", "--agents", "none")
+	writePrompt(t, root, project.RootID, rootPrompt)
+	writePrompt(t, root, "architecture.identity", identityPrompt)
+	commitAll(t, root, "baseline")
+
+	planOutput := runCLI(t, nil, "plan")
+	match := regexp.MustCompile(`created (plan-[^\s]+)`).FindStringSubmatch(planOutput)
+	if len(match) != 2 {
+		t.Fatalf("could not parse plan id from %s", planOutput)
+	}
+	planID := match[1]
+
+	// Move HEAD after the plan was created, so the plan's base commit is stale.
+	extra := filepath.Join(root, "note.txt")
+	if err := os.WriteFile(extra, []byte("unrelated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, root, "unrelated head move")
+
+	// Strict mode keeps the base-commit binding: next refuses a stale plan.
+	strictNext, strictCode := runCLIResult(nil, "next", planID)
+	if strictCode == 0 || !strings.Contains(strictNext, "plan_base_commit_changed") {
+		t.Fatalf("strict next must reject a stale base commit, code=%d output=%s", strictCode, strictNext)
+	}
+
+	// Silent mode drops the provenance anchor: the stale plan still runs.
+	var modeBuf bytes.Buffer
+	if err := switchMode(root, project.ModeSilent, &modeBuf); err != nil {
+		t.Fatal(err)
+	}
+	silentNext := runCLI(t, nil, "next", planID)
+	if !strings.Contains(silentNext, "EBO EXECUTION GATE: OPEN") || !strings.Contains(silentNext, "architecture.identity") {
+		t.Fatalf("silent next must proceed despite a stale base commit: %s", silentNext)
+	}
+	guardOut := runCLI(t, nil, "guard", "check")
+	if !strings.Contains(guardOut, "guard: pass") || !strings.Contains(guardOut, "EBO EXECUTION GATE: OPEN") {
+		t.Fatalf("silent guard must validate the active task with a stale base commit: %s", guardOut)
+	}
+}

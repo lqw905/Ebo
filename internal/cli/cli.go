@@ -1190,7 +1190,7 @@ func runNext(args []string, out io.Writer) error {
 			printGateClosed(out, "no_executable_task", "create a Prompt proposal and wait for human approval")
 			return nil
 		}
-		if plan.BaseCommit != gitx.Head(root) {
+		if mode != project.ModeSilent && plan.BaseCommit != gitx.Head(root) {
 			printGateClosed(out, "plan_base_commit_changed", "create a new plan from the current Git HEAD")
 			return fmt.Errorf("plan %s is based on %s but HEAD is %s", plan.ID, plan.BaseCommit, gitx.Head(root))
 		}
@@ -1457,6 +1457,10 @@ func runCommit(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	mode, err := project.ReadMode(root)
+	if err != nil {
+		return err
+	}
 	return withProjectLock(root, "commit", func() error {
 		plan, err := planner.Load(root, planID)
 		if err != nil {
@@ -1501,8 +1505,10 @@ func runCommit(args []string, out io.Writer) error {
 			return fmt.Errorf("nothing is staged for commit")
 		}
 		if sourceNames := sourceChangeNames(staged); len(sourceNames) > 0 {
-			if _, err := stagedCompletedPlan(root, staged); err != nil {
-				return fmt.Errorf("staged guard rejected commit: %w", err)
+			if mode != project.ModeSilent {
+				if _, err := stagedCompletedPlan(root, staged); err != nil {
+					return fmt.Errorf("staged guard rejected commit: %w", err)
+				}
 			}
 			fmt.Fprintf(out, "guard:  pass (%d staged source change(s))\n", len(sourceNames))
 		}
@@ -2145,18 +2151,22 @@ func validateActiveTask(root string, active *execution.ActiveTask) (*planner.Pla
 	if active == nil {
 		return nil, nil, execution.ErrNoActiveTask
 	}
+	mode, err := project.ReadMode(root)
+	if err != nil {
+		return nil, nil, err
+	}
 	head := gitx.Head(root)
 	if head == "" {
 		return nil, nil, fmt.Errorf("git baseline is missing")
 	}
-	if active.BaseCommit != head {
+	if mode != project.ModeSilent && active.BaseCommit != head {
 		return nil, nil, fmt.Errorf("active task base commit is %s but HEAD is %s", active.BaseCommit, head)
 	}
 	plan, err := planner.Load(root, active.PlanID)
 	if err != nil {
 		return nil, nil, err
 	}
-	if plan.BaseCommit != active.BaseCommit {
+	if mode != project.ModeSilent && plan.BaseCommit != active.BaseCommit {
 		return nil, nil, fmt.Errorf("active task and plan base commits do not match")
 	}
 	task, err := planner.FindTask(plan, active.TaskID)

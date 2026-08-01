@@ -38,7 +38,7 @@ ebo scan 仅用于查看，永远不授予代码修改权限。只有 ebo next �
 drafts/**/*.md 可以在 CLOSED 状态下用于生成 proposal 草稿，但这不授予业务源码修改权限。
 当前项目为静默模式：用户提出新的代码需求时，Agent 应生成 Prompt 草稿并依次运行 ebo add、ebo approve、ebo apply、ebo next 和 ebo report，不需要请求用户逐条批准。
 静默模式下 ebo approve 自动通过，不再要求交互确认；Agent 仍必须遵守哈希校验、scope 与执行门禁。
-静默模式不强制提交。仅当用户明确要求时才提交，且只发生在 report 完成后、门禁关闭时；任务中途提交会使当前活动任务失效。用户要求提交时，直接运行 git add -A 与 git commit，.ebo 记录会一并提交。
+静默模式不强制提交，每个计划完成后也不会自动提交。仅当用户明确要求时才提交，用户想什么时候提交就什么时候提交，可以在任意多个计划之间累积不提交；提交只发生在 report 完成后、门禁关闭时，任务中途提交会使当前活动任务失效。用户要求提交时，直接运行 git add -A 与 git commit，.ebo 记录会一并提交。
 生成 Prompt 时默认只校订用户原话（错别字、语序、不通顺），不得增删语义或补充用户没说的内容；只有用户明确要求“生成/优化 prompt 或设计文档”时才允许创作发挥，且必须用 ebo add --request 记录用户原要求，供 review 对照核验。
 如果 ebo next 返回 CLOSED 或没有任务，禁止修改业务代码。
 不得遍历整个 .ebo/tree/ 自行选择任务，不得手工修改 .ebo/tree、.ebo/plans、.ebo/receipts 或 .ebo/runtime 中的控制状态与哈希。
