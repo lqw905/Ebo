@@ -5,11 +5,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lqw905/Ebo/internal/project"
 )
 
 func TestUpdateCreatesExecutionProtocol(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "AGENTS.md")
-	action, err := Update(path)
+	action, err := Update(path, project.ModeStrict)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,16 +41,42 @@ func TestUpdateCreatesExecutionProtocol(t *testing.T) {
 	}
 }
 
+func TestSilentBlockDirectsAgentToSelfApprove(t *testing.T) {
+	block := Block(project.ModeSilent)
+	for _, want := range []string{
+		"此区块由 Ebo 管理",
+		"EBO HARD GATE: NO EBO TASK, NO SOURCE EDIT",
+		"静默模式",
+		"依次运行 ebo add、ebo approve、ebo apply、ebo next 和 ebo report",
+		"静默模式下 ebo approve 自动通过",
+		"静默模式不强制提交",
+		"只发生在 report 完成后、门禁关闭时",
+		"git add -A 与 git commit",
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("silent block does not contain %q:\n%s", want, block)
+		}
+	}
+	for _, banned := range []string{"Agent 不得执行", "停止等待人工审批"} {
+		if strings.Contains(block, banned) {
+			t.Fatalf("silent block must not contain %q:\n%s", banned, block)
+		}
+	}
+	if strings.Contains(Block(project.ModeStrict), "静默模式") {
+		t.Fatalf("strict block must not mention silent mode:\n%s", Block(project.ModeStrict))
+	}
+}
+
 func TestUpdatePreservesUserContentAndIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "CLAUDE.md")
 	const userContent = "# Project instructions\n\nKeep this line.\n"
 	if err := os.WriteFile(path, []byte(userContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if action, err := Update(path); err != nil || action != "appended" {
+	if action, err := Update(path, project.ModeStrict); err != nil || action != "appended" {
 		t.Fatalf("first update = %q, %v", action, err)
 	}
-	if action, err := Update(path); err != nil || action != "updated" {
+	if action, err := Update(path, project.ModeStrict); err != nil || action != "updated" {
 		t.Fatalf("second update = %q, %v", action, err)
 	}
 	data, err := os.ReadFile(path)

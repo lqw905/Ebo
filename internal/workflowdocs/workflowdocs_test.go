@@ -5,11 +5,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lqw905/Ebo/internal/project"
 )
 
 func TestUpdateCreatesChineseWorkflow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), Filename)
-	action, err := Update(path)
+	action, err := Update(path, project.ModeStrict)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,16 +53,39 @@ func TestUpdateCreatesChineseWorkflow(t *testing.T) {
 	}
 }
 
+func TestSilentModeAddsBanner(t *testing.T) {
+	strict := Block(project.ModeStrict)
+	silent := Block(project.ModeSilent)
+	if strings.Contains(strict, "当前模式：静默") {
+		t.Fatalf("strict workflow must not contain silent banner:\n%s", strict)
+	}
+	for _, want := range []string{
+		"当前模式：静默（silent）",
+		"依次运行 ebo add、ebo approve、ebo apply、ebo next 和 ebo report",
+		"改为 Agent 自动执行",
+		"提交时机：静默模式不强制提交",
+		"只发生在 report 完成后、门禁关闭时",
+		"普通 git add -A 与 git commit",
+	} {
+		if !strings.Contains(silent, want) {
+			t.Fatalf("silent workflow does not contain %q:\n%s", want, silent)
+		}
+	}
+	if strings.Contains(silent, "{{MODE_BANNER}}") {
+		t.Fatalf("silent workflow leaked the mode marker:\n%s", silent)
+	}
+}
+
 func TestUpdatePreservesContentOutsideManagedBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, Filename)
 	const prefix = "# 项目补充规则\n\n必须保留。\n\n"
 	const suffix = "\n\n## 团队约定\n\n也必须保留。\n"
-	initial := prefix + strings.TrimRight(ManagedBlock, "\n") + suffix
+	initial := prefix + strings.TrimRight(Block(project.ModeStrict), "\n") + suffix
 	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	action, err := Update(path)
+	action, err := Update(path, project.ModeStrict)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -56,6 +56,8 @@ func Execute(args []string, in io.Reader, out, errOut io.Writer) int {
 		err = runLock(args[1:], out)
 	case "config":
 		err = runConfig(args[1:], out)
+	case "mode":
+		err = runMode(args[1:], in, out)
 	case "add":
 		err = runAdd(args[1:], in, out, errOut)
 	case "review":
@@ -115,6 +117,7 @@ func printHelp(out io.Writer) {
 
 Usage:
   ebo init [--agents codex,claude]
+  ebo mode [strict|silent]
   ebo add (--stdin | --file <path> | --dir <path>) [--dry-run]
   ebo review [proposal-id]
   ebo approve <proposal-id>
@@ -157,12 +160,12 @@ func runInit(args []string, out, errOut io.Writer) error {
 		return err
 	}
 	if !fileExists(paths.ConfigFile) {
-		config := fmt.Sprintf("schema = \"ebo.config/v1\"\nproject_root = %q\ntree_dir = \".ebo/tree\"\nworkflow_file = \".ebo/WORKFLOW.md\"\nzero_ai = true\n", filepath.ToSlash(root))
+		config := fmt.Sprintf("schema = \"ebo.config/v1\"\nproject_root = %q\ntree_dir = \".ebo/tree\"\nworkflow_file = \".ebo/WORKFLOW.md\"\nzero_ai = true\nmode = %q\n", filepath.ToSlash(root), project.ModeStrict)
 		if err := project.WriteFileAtomic(paths.ConfigFile, []byte(config), 0o644); err != nil {
 			return err
 		}
 	}
-	workflowAction, err := workflowdocs.Update(paths.WorkflowFile)
+	workflowAction, err := workflowdocs.Update(paths.WorkflowFile, project.ModeStrict)
 	if err != nil {
 		return err
 	}
@@ -190,7 +193,7 @@ func runInit(args []string, out, errOut io.Writer) error {
 			fmt.Fprintf(errOut, "warning: unknown agent %q ignored\n", agent)
 			continue
 		}
-		action, err := agentdocs.Update(path)
+		action, err := agentdocs.Update(path, project.ModeStrict)
 		if err != nil {
 			return err
 		}
@@ -228,6 +231,11 @@ func runDoctor(args []string, out io.Writer) error {
 		}
 	}
 	check(fileExists(paths.ConfigFile), "config", paths.ConfigFile)
+	mode, err := project.ReadMode(root)
+	if err != nil {
+		return err
+	}
+	check(project.ValidMode(mode), "mode "+mode, "")
 	check(workflowdocs.IsManaged(paths.WorkflowFile), "workflow document", paths.WorkflowFile)
 	check(dirExists(paths.TreeDir), "tree directory", paths.TreeDir)
 	check(dirExists(paths.ProposalsDir), "proposal directory", paths.ProposalsDir)
@@ -312,6 +320,84 @@ func runConfig(args []string, out io.Writer) error {
 	}
 	_, err = out.Write(data)
 	return err
+}
+
+// runMode shows the current governance mode or switches it. Switching always
+// requires an interactive terminal and a [y/N] confirmation so an agent can
+// never relax its own approval gate; only a human can change the mode.
+func runMode(args []string, in io.Reader, out io.Writer) error {
+	root, err := requireRoot()
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		mode, err := project.ReadMode(root)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "mode: %s\n", mode)
+		return nil
+	}
+	if len(args) != 1 || !project.ValidMode(args[0]) {
+		return fmt.Errorf("usage: ebo mode [strict|silent]")
+	}
+	target := args[0]
+	current, err := project.ReadMode(root)
+	if err != nil {
+		return err
+	}
+	if current == target {
+		fmt.Fprintf(out, "mode: %s (already)\n", current)
+		return nil
+	}
+	if !isTerminal(in) {
+		return fmt.Errorf("switching mode requires an interactive terminal")
+	}
+	if target == project.ModeSilent {
+		fmt.Fprintln(out, "切换到静默模式：Agent 将自行运行 ebo add/approve/apply/next/report，不再逐条请求人工批准。")
+	} else {
+		fmt.Fprintln(out, "切换到严格模式：每个 Prompt 都必须在交互终端输入 y 人工审批。")
+	}
+	fmt.Fprintf(out, "Switch mode to %s? [y/N]\n", target)
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if !approvalConfirmed(line) {
+		fmt.Fprintln(out, "mode change canceled")
+		return nil
+	}
+	return switchMode(root, target, out)
+}
+
+// switchMode applies an already-confirmed mode change: it updates the config,
+// regenerates the workflow document, and refreshes any existing agent doc
+// managed blocks so the instructions match the new mode.
+func switchMode(root, target string, out io.Writer) error {
+	return withProjectLock(root, "mode", func() error {
+		if err := project.SetMode(root, target); err != nil {
+			return err
+		}
+		paths := project.NewPaths(root)
+		workflowAction, err := workflowdocs.Update(paths.WorkflowFile, target)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s %s\n", workflowAction, filepath.ToSlash(paths.WorkflowFile))
+		for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+			path := filepath.Join(root, name)
+			if !fileExists(path) {
+				continue
+			}
+			action, err := agentdocs.Update(path, target)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "%s %s\n", action, name)
+		}
+		fmt.Fprintf(out, "mode: %s\n", target)
+		return nil
+	})
 }
 
 func runAdd(args []string, in io.Reader, out, errOut io.Writer) error {
@@ -450,7 +536,12 @@ func runApprove(args []string, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if !isTerminal(in) {
+	mode, err := project.ReadMode(root)
+	if err != nil {
+		return err
+	}
+	interactive := mode != project.ModeSilent
+	if interactive && !isTerminal(in) {
 		return fmt.Errorf("approve requires an interactive terminal")
 	}
 	actualHash, err := proposal.RecomputeHash(root, meta)
@@ -466,14 +557,18 @@ func runApprove(args []string, in io.Reader, out io.Writer) error {
 		fmt.Fprintf(out, "- %s (%s): %s\n", node.ID, node.Kind, node.Title)
 	}
 	fmt.Fprintf(out, "Hash:     %s\n", document.ShortHash(meta.ProposalHash, 12))
-	fmt.Fprintln(out, "Approve this proposal? [y/N]")
-	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	if !approvalConfirmed(line) {
-		fmt.Fprintln(out, "approval canceled")
-		return nil
+	if !interactive {
+		fmt.Fprintln(out, "mode: silent (auto-approve)")
+	} else {
+		fmt.Fprintln(out, "Approve this proposal? [y/N]")
+		line, err := bufio.NewReader(in).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		if !approvalConfirmed(line) {
+			fmt.Fprintln(out, "approval canceled")
+			return nil
+		}
 	}
 	var approved *proposal.Meta
 	err = withProjectLock(root, "approve", func() error {
@@ -553,6 +648,11 @@ func runStatus(args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "project: %s\n", root)
+	mode, err := project.ReadMode(root)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "mode:    %s\n", mode)
 	proposals, err := proposal.List(root)
 	if err != nil {
 		return err
@@ -586,6 +686,13 @@ func runStatus(args []string, out io.Writer) error {
 		planCounts[item.Status]++
 	}
 	fmt.Fprintf(out, "plans: planned=%d running=%d completed=%d failed=%d blocked=%d aborted=%d empty=%d\n", planCounts["planned"], planCounts["running"], planCounts["completed"], planCounts["failed"], planCounts["blocked"], planCounts["aborted"], planCounts["empty"])
+	if mode == project.ModeSilent {
+		if names, err := gitx.ChangedNames(root); err == nil {
+			if n := len(sourceChangeNames(names)); n > 0 {
+				fmt.Fprintf(out, "uncommitted: %d source change(s) (silent mode; commit when the user asks)\n", n)
+			}
+		}
+	}
 	if active, activeErr := execution.Load(root); activeErr == nil {
 		if _, _, validationErr := validateActiveTask(root, active); validationErr != nil {
 			fmt.Fprintf(out, "gate: invalid (%v)\n", validationErr)
@@ -901,6 +1008,10 @@ func runNext(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	mode, err := project.ReadMode(root)
+	if err != nil {
+		return err
+	}
 	return withProjectLock(root, "next", func() error {
 		if gitx.Head(root) == "" {
 			printGateClosed(out, "git_baseline_missing", "commit the initialized project before requesting a task")
@@ -965,7 +1076,7 @@ func runNext(args []string, out io.Writer) error {
 			printGateClosed(out, "plan_base_commit_changed", "create a new plan from the current Git HEAD")
 			return fmt.Errorf("plan %s is based on %s but HEAD is %s", plan.ID, plan.BaseCommit, gitx.Head(root))
 		}
-		if plan.Status == "planned" {
+		if plan.Status == "planned" && mode != project.ModeSilent {
 			changed, err := gitx.ChangedNames(root)
 			if err != nil {
 				return err
@@ -1297,6 +1408,10 @@ func runGuard(args []string, out io.Writer) error {
 		printGateClosed(out, "git_baseline_missing", "create an initial commit before checking execution authorization")
 		return fmt.Errorf("git baseline is missing")
 	}
+	mode, err := project.ReadMode(root)
+	if err != nil {
+		return err
+	}
 	staged := len(args) == 2
 	if staged {
 		names, err := gitx.CachedNames(root)
@@ -1308,6 +1423,13 @@ func runGuard(args []string, out io.Writer) error {
 			fmt.Fprintln(out, "guard: pass")
 			fmt.Fprintln(out, "mode: staged")
 			fmt.Fprintln(out, "reason: no_staged_source_changes")
+			return nil
+		}
+		if mode == project.ModeSilent {
+			fmt.Fprintln(out, "guard: pass")
+			fmt.Fprintln(out, "mode: staged")
+			fmt.Fprintln(out, "reason: silent_mode_no_provenance")
+			fmt.Fprintf(out, "source_changes: %d\n", len(sourceNames))
 			return nil
 		}
 		plan, err := stagedCompletedPlan(root, names)

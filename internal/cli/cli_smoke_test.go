@@ -367,6 +367,186 @@ func TestStagedGuardAllowsMetadataOnly(t *testing.T) {
 	}
 }
 
+func TestModeSwitchAndSilentApprove(t *testing.T) {
+	root := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+
+	runCLI(t, nil, "init", "--agents", "codex")
+	draft := filepath.Join(root, "drafts", "vibe.md")
+	if err := os.MkdirAll(filepath.Dir(draft), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(draft, []byte(vibePrompt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addOutput := runCLI(t, nil, "add", "--file", "drafts/vibe.md")
+	match := regexp.MustCompile(`created (proposal-[^\s]+)`).FindStringSubmatch(addOutput)
+	if len(match) != 2 {
+		t.Fatalf("could not parse proposal id from:\n%s", addOutput)
+	}
+	proposalID := match[1]
+
+	// Strict mode: approve refuses non-interactive input.
+	strictOut, strictCode := runCLIResult(nil, "approve", proposalID)
+	if strictCode == 0 || !strings.Contains(strictOut, "requires an interactive terminal") {
+		t.Fatalf("strict approve must require a terminal, code=%d output=%s", strictCode, strictOut)
+	}
+	modeOut := runCLI(t, nil, "mode")
+	if !strings.Contains(modeOut, "mode: strict") {
+		t.Fatalf("mode output = %s", modeOut)
+	}
+
+	// The switch command itself refuses non-interactive input; the confirmed
+	// path (switchMode) is exercised directly below.
+	switchOut, switchCode := runCLIResult(nil, "mode", "silent")
+	if switchCode == 0 || !strings.Contains(switchOut, "switching mode requires an interactive terminal") {
+		t.Fatalf("mode switch must require a terminal, code=%d output=%s", switchCode, switchOut)
+	}
+	var modeBuf bytes.Buffer
+	if err := switchMode(root, project.ModeSilent, &modeBuf); err != nil {
+		t.Fatal(err)
+	}
+	configData, err := os.ReadFile(filepath.Join(root, ".ebo", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configData), `mode = "silent"`) {
+		t.Fatalf("config not switched to silent:\n%s", configData)
+	}
+	workflowData, err := os.ReadFile(filepath.Join(root, ".ebo", "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(workflowData), "当前模式：静默") {
+		t.Fatalf("WORKFLOW.md missing silent banner:\n%s", workflowData)
+	}
+	agentData, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(agentData), "静默模式下 ebo approve 自动通过") || strings.Contains(string(agentData), "Agent 不得执行") {
+		t.Fatalf("AGENTS.md not switched to silent block:\n%s", agentData)
+	}
+
+	// Silent mode: approve auto-passes and apply enters the tree.
+	modeOut = runCLI(t, nil, "mode")
+	if !strings.Contains(modeOut, "mode: silent") {
+		t.Fatalf("mode output after switch = %s", modeOut)
+	}
+	approveOut := runCLI(t, nil, "approve", proposalID)
+	if !strings.Contains(approveOut, "mode: silent (auto-approve)") || !strings.Contains(approveOut, "approved") {
+		t.Fatalf("silent approve output = %s", approveOut)
+	}
+	runCLI(t, nil, "apply", proposalID)
+	treeOut := runCLI(t, nil, "tree", "list")
+	if !strings.Contains(treeOut, "feature.vibe") {
+		t.Fatalf("applied node missing from tree:\n%s", treeOut)
+	}
+
+	// Switch back to strict restores the strict docs.
+	if err := switchMode(root, project.ModeStrict, &modeBuf); err != nil {
+		t.Fatal(err)
+	}
+	configData, err = os.ReadFile(filepath.Join(root, ".ebo", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configData), `mode = "strict"`) {
+		t.Fatalf("config not switched back to strict:\n%s", configData)
+	}
+	workflowData, err = os.ReadFile(filepath.Join(root, ".ebo", "WORKFLOW.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(workflowData), "当前模式：静默") {
+		t.Fatalf("WORKFLOW.md still has silent banner after switching back:\n%s", workflowData)
+	}
+	agentData, err = os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(agentData), "Agent 不得执行") {
+		t.Fatalf("AGENTS.md not switched back to strict block:\n%s", agentData)
+	}
+}
+
+func TestSilentModeSkipsCommitGuards(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+	root := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+
+	git := exec.Command("git", "init")
+	git.Dir = root
+	if output, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, output)
+	}
+	runCLI(t, nil, "init", "--agents", "none")
+	writePrompt(t, root, project.RootID, rootPrompt)
+	writePrompt(t, root, "architecture.identity", identityPrompt)
+	commitAll(t, root, "baseline")
+
+	planOutput := runCLI(t, nil, "plan")
+	match := regexp.MustCompile(`created (plan-[^\s]+)`).FindStringSubmatch(planOutput)
+	if len(match) != 2 {
+		t.Fatalf("could not parse plan id from %s", planOutput)
+	}
+	planID := match[1]
+	source := filepath.Join(root, "internal", "auth", "service.go")
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("package auth\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Strict mode: a fresh plan rejects pre-existing source changes.
+	strictNext, strictCode := runCLIResult(nil, "next", planID)
+	if strictCode == 0 || !strings.Contains(strictNext, "reason: preexisting_source_changes") {
+		t.Fatalf("strict next must reject pre-existing source, code=%d output=%s", strictCode, strictNext)
+	}
+	// Strict staged guard rejects source not backed by a completed plan.
+	gitAddAll(t, root)
+	strictStaged, strictStagedCode := runCLIResult(nil, "guard", "check", "--staged")
+	if strictStagedCode == 0 || !strings.Contains(strictStaged, "staged_source_without_completed_plan") {
+		t.Fatalf("strict staged guard must reject source without a plan, code=%d output=%s", strictStagedCode, strictStaged)
+	}
+
+	// Silent mode: both gates relax, and status surfaces the hint.
+	var modeBuf bytes.Buffer
+	if err := switchMode(root, project.ModeSilent, &modeBuf); err != nil {
+		t.Fatal(err)
+	}
+	silentStaged := runCLI(t, nil, "guard", "check", "--staged")
+	if !strings.Contains(silentStaged, "guard: pass") || !strings.Contains(silentStaged, "reason: silent_mode_no_provenance") {
+		t.Fatalf("silent staged guard output = %s", silentStaged)
+	}
+	silentNext := runCLI(t, nil, "next", planID)
+	if !strings.Contains(silentNext, "EBO EXECUTION GATE: OPEN") || !strings.Contains(silentNext, "architecture.identity") {
+		t.Fatalf("silent next must proceed with pre-existing source: %s", silentNext)
+	}
+	statusOutput := runCLI(t, nil, "status")
+	if !strings.Contains(statusOutput, "uncommitted: 1 source change(s)") {
+		t.Fatalf("status should report the uncommitted source hint:\n%s", statusOutput)
+	}
+	runCLI(t, nil, "report", "architecture.identity", "--plan", planID, "--result", "passed", "--note", "silent smoke")
+}
+
 func runCLIResult(in *bytes.Buffer, args ...string) (string, int) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -495,4 +675,21 @@ links:
 ---
 ## Intent
 Let users sign in.
+`
+
+const vibePrompt = `---
+schema: ebo.prompt/v1
+id: feature.vibe
+title: Vibe Feature
+kind: feature
+parent: project.root
+state:
+  spec: draft
+  execution: not_started
+  sync: dirty
+links:
+  references: []
+---
+## Intent
+Vibe-coded feature.
 `

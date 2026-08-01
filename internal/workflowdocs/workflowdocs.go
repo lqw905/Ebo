@@ -13,15 +13,32 @@ const (
 	Filename    = "WORKFLOW.md"
 	startMarker = "<!-- EBO:WORKFLOW:START -->"
 	endMarker   = "<!-- EBO:WORKFLOW:END -->"
+	modeMarker  = "{{MODE_BANNER}}"
 )
 
 //go:embed WORKFLOW.zh-CN.md
-var ManagedBlock string
+var managedWorkflow string
 
-func Update(path string) (string, error) {
+// silentBanner is prepended to the workflow document in silent mode. It
+// overrides every "stop and wait for human approval" instruction below, so an
+// agent following the document in a silent project auto-runs the pipeline.
+const silentBanner = "\n> **当前模式：静默（silent）。** 用户提出新的代码需求后，Agent 应自行依次运行 ebo add、ebo approve、ebo apply、ebo next 和 ebo report；本工作流中所有「停止等待人工审批」「Agent 不得运行 ebo approve / ebo apply」的说明，在静默模式下改为 Agent 自动执行。\n> 提交时机：静默模式不强制提交。仅当用户明确要求时才提交，且只发生在 report 完成后、门禁关闭时；任务中途提交会使活动任务失效。提交使用普通 git add -A 与 git commit，.ebo 记录会随提交一并保存。"
+
+// Block returns the managed workflow document for the given project mode. The
+// strict document is unchanged; silent mode adds a banner that redefines the
+// approval steps for the agent.
+func Block(mode string) string {
+	if mode == project.ModeSilent {
+		return strings.Replace(managedWorkflow, modeMarker, silentBanner, 1)
+	}
+	return strings.Replace(managedWorkflow, modeMarker, "", 1)
+}
+
+func Update(path, mode string) (string, error) {
+	block := Block(mode)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		if err := project.WriteFileAtomic(path, []byte(ManagedBlock), 0o644); err != nil {
+		if err := project.WriteFileAtomic(path, []byte(block), 0o644); err != nil {
 			return "", err
 		}
 		return "created", nil
@@ -41,7 +58,7 @@ func Update(path string) (string, error) {
 		if len(next) > 0 && !strings.HasSuffix(next, "\n") {
 			next += "\n"
 		}
-		next += "\n" + ManagedBlock
+		next += "\n" + block
 		if err := project.WriteFileAtomic(path, []byte(next), 0o644); err != nil {
 			return "", err
 		}
@@ -51,7 +68,7 @@ func Update(path string) (string, error) {
 		return "", fmt.Errorf("%s has malformed Ebo workflow block", path)
 	}
 	end += len(endMarker)
-	next := text[:start] + strings.TrimRight(ManagedBlock, "\n") + text[end:]
+	next := text[:start] + strings.TrimRight(block, "\n") + text[end:]
 	if !strings.HasSuffix(next, "\n") {
 		next += "\n"
 	}

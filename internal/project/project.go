@@ -15,6 +15,12 @@ const (
 	DirName    = ".ebo"
 	ConfigName = "config.toml"
 	RootID     = "project.root"
+
+	// ModeStrict requires per-prompt interactive human approval.
+	ModeStrict = "strict"
+	// ModeSilent lets the agent run add/approve/apply/next/report without
+	// pausing for interactive confirmation. Only the human may switch modes.
+	ModeSilent = "silent"
 )
 
 var ErrNotInitialized = errors.New("ebo project is not initialized")
@@ -52,6 +58,61 @@ func NewPaths(root string) Paths {
 		LocksDir:     filepath.Join(ebo, "locks"),
 		TmpDir:       filepath.Join(ebo, "tmp"),
 	}
+}
+
+func ValidMode(mode string) bool {
+	return mode == ModeStrict || mode == ModeSilent
+}
+
+// ParseMode returns the mode declared in a config file, defaulting to strict.
+func ParseMode(data []byte) string {
+	mode := ModeStrict
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != "mode" {
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"`)
+		if ValidMode(value) {
+			mode = value
+		}
+	}
+	return mode
+}
+
+func ReadMode(root string) (string, error) {
+	data, err := os.ReadFile(NewPaths(root).ConfigFile)
+	if err != nil {
+		return "", err
+	}
+	return ParseMode(data), nil
+}
+
+// SetMode rewrites the mode line in the project config. An invalid mode is
+// rejected before any write.
+func SetMode(root, mode string) error {
+	if !ValidMode(mode) {
+		return fmt.Errorf("invalid mode %q", mode)
+	}
+	path := NewPaths(root).ConfigFile
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	replaced := false
+	for i, line := range lines {
+		key, _, ok := strings.Cut(line, "=")
+		if ok && strings.TrimSpace(key) == "mode" {
+			lines[i] = fmt.Sprintf("mode = %q", mode)
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		lines = append(lines, fmt.Sprintf("mode = %q", mode))
+	}
+	return WriteFileAtomic(path, []byte(strings.Join(lines, "\n")), 0o644)
 }
 
 func FindRoot(start string) (string, error) {
