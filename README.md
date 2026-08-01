@@ -148,7 +148,7 @@ Ebo 支持两种项目治理模式：
 - 完整的 YAML 1.2 解析器集成与 JSON Schema 校验。
 - 每个计划一个提交的实现代码自动暂存。
 - Agent 原生写入前适配器的自动安装；Agent 运行时目前可以直接调用 `ebo hook pre-write`。
-- 发布工作流发布 npm 包前，需要在 npm 上配置 Trusted Publishing。
+- 发布使用 npm token，而不是 OIDC Trusted Publishing（Trusted Publishing 会把身份绑定到某个 npm org 的 scope，与包 scope 不一致时发布会返回 404）。
 
 ## 发布
 
@@ -176,6 +176,38 @@ node scripts/prepare-npm-packages.mjs X.Y.Z dist
 ```
 
 有需求时再添加其他平台。
+
+安装方式：
+
+```bash
+npm install -g @aibo666/ebo        # 通过 npm 安装（自动选择平台包）
+# 或从 GitHub Release 下载对应平台的二进制
+```
+
+### 发布前置条件
+
+1. **npm token 必须开启 Bypass 2FA。** npm 要求所有发布绕过 2FA，未开启时 `npm publish` 报 `403 Forbidden - Two-factor authentication or granular access token with bypass 2fa enabled is required`。token 的 `bypass_2fa` 只能在 npm 创建 token 时勾选，事后无法通过 API 修改，需要重建。
+2. **token 身份必须拥有包 scope。** 包名为 `@aibo666/*`，token 所属用户必须是 `aibo666`（或用例 `npm whoami` 验证）。scope 归属错误时 npm 返回 404（不是 403，npm 用 404 掩盖 scope 是否存在）。
+3. **把 token 存为 GitHub Actions secret `NODE_AUTH_TOKEN`**：`gh secret set NODE_AUTH_TOKEN`。
+
+### 发布排错（前两次失败根因）
+
+| 现象 | 根因 |
+| --- | --- |
+| CI 发布 404 Not Found - PUT `@aibo666/*` | CI 用了 OIDC Trusted Publishing，身份绑定到 npm org `aibo-dev` 的 scope，不拥有 `@aibo666`；改用普通 token secret |
+| 本地发布 403 需 bypass 2FA | 账号开了 2FA 但 token 没勾 Bypass 2FA |
+| CI 改了 setup-node 仍用旧身份 | `npm-auth-token` 不是 setup-node 的合法输入（会被 warning 忽略）；正确做法是把 `NODE_AUTH_TOKEN` 作为环境变量注入 setup-node 步骤和每个 `npm publish` 步骤 |
+
+验证发布成功：
+
+```bash
+npm view @aibo666/ebo@X.Y.Z version
+npm view @aibo666/ebo-win32-x64@X.Y.Z version
+npm view @aibo666/ebo-darwin-arm64@X.Y.Z version
+gh release view vX.Y.Z
+```
+
+重新触发发布：删除并重建标签（`git tag -d`、`git push origin :refs/tags/vX.Y.Z`、重新 `git tag` 后 push）。
 
 ## Prompt 边界
 
