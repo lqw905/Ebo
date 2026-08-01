@@ -143,7 +143,36 @@ ebo context <prompt-id> --depth 0
 
 ## 5. 将对话沉淀为 Prompt 树
 
-用户可以先与 Agent 自由讨论需求、方案和边界。讨论内容不会自动进入 Prompt 树。当用户明确要求“沉淀到 Ebo”“更新 Prompt 树”或直接提出新的代码变更，而当前没有 OPEN 任务时，Agent 可以创建草稿并运行 `ebo add`，但不能修改业务代码。
+用户提出需求或与 Agent 讨论。讨论内容不会自动进入 Prompt 树。Agent 把需求写成 proposal 草稿，经人工 `review`、`approve`、`apply` 后进入正式树。
+
+### 5.1 两种创作模式与触发规则
+
+| 模式 | 触发 | Agent 的规则 |
+| --- | --- | --- |
+| 记录模式（默认） | 用户直接报需求点（“实现登录”“把状态机改成xx”），或明确要求“沉淀到 Ebo”“更新 Prompt 树”，或直接提出新的代码变更，而当前没有 OPEN 任务 | 正文只能校订用户原话（错别字、语序、不通顺），不增删语义、不补充用户没说的内容 |
+| 创作模式 | 用户明确要求“生成/优化 prompt”“写成完整的需求/设计文档”“补充验收条件和边界情况” | 允许发挥：补全目标、验收条件、上下文、边界与依赖；产出标为 AI 创作，并随 proposal 记录用户原要求，供人工复核 |
+
+默认是记录模式；出现明确的创作请求才切创作模式。“发挥”永远是显式授权，不是 Agent 的默认行为。
+
+### 5.2 记录模式：忠实性规则
+
+- **正文 = 用户原话的轻度校订版**：只改错别字、语序、不通顺；不增删语义，不补用户没说的验收条件、边界或依赖。
+- **薄而忠实 > 厚而虚构**：用户没说就不补；用户需要补充时会在 `review` 提出，或明确授权 Agent 补充。
+- 每次 `ebo add` 都带 `--request "<用户原话>"`，proposal 会记录并哈希绑定它；`ebo review` 并排显示“用户要求 vs Prompt 正文”，人工一眼核验有没有加料。
+
+### 5.3 创作模式：生成或优化 Prompt
+
+用户明确要求“生成/优化 prompt”时，Agent 才真正创作：可以补全验收条件、边界、依赖分析，产出更完整的 Prompt Markdown。创作模式的信任不来自“构造上忠实”（内容由 AI 编写），而来自**人工复核**——`--request` 必须记录用户原要求，`ebo review` 并排对照，确认产出确实满足了要求，而不是跑题。
+
+### 5.4 设计文档与讨论产物
+
+用户明确要求“写设计文档/方案”时：
+
+- **设计文档是讨论产物，不作为可执行任务进树**。它没有可执行的验收条件，`ebo next` 也不该把它当任务返回；文档留在 `drafts/` 供审阅。
+- 从设计文档**蒸馏出决策性 Prompt**（实现任务、架构决策、约束），再走 `add → approve → apply` 进树。
+- 不要把整份文档 apply 成单个节点。
+
+### 5.5 沉淀讨论
 
 讨论完成后，输入给 Agent：
 
@@ -153,6 +182,7 @@ ebo context <prompt-id> --depth 0
 分析哪些内容应该新建 Prompt、修改已有 Prompt 或通过 supersedes 替代旧 Prompt，补全目标、上下文、验收条件、唯一 parent 和语义依赖。
 先查询相关 Prompt，只加载必要上下文。把本次讨论形成的完整 Markdown 写到独立目录 drafts/ebo/<topic>/。
 你可以先运行 ebo add --dry-run --dir drafts/ebo/<topic>/ 检查，再运行 ebo add --dir drafts/ebo/<topic>/ 创建一个 proposal。
+每次 ebo add 都带 --request "<用户对本次需求的原始描述>"，供 review 对照核验忠实性。
 创建完成后告诉我 proposal ID、proposal hash、新增或修改的 Prompt、依赖变化和待确认问题。
 不要直接修改 .ebo/tree，不要运行 ebo approve 或 ebo apply。
 ```
@@ -162,17 +192,20 @@ Agent 应按需查询相关节点，并把同一次讨论产生的相关 Prompt 
 ```bash
 ebo tree search "<相关内容>"
 ebo context <相关-prompt-id> --depth 0
-ebo add --dry-run --dir drafts/ebo/<topic>/
-ebo add --dir drafts/ebo/<topic>/
+ebo add --dry-run --dir drafts/ebo/<topic>/ --request "<用户原话>"
+ebo add --dir drafts/ebo/<topic>/ --request "<用户原话>"
 ```
 
-如果本次讨论只产生一个 Prompt，也可以使用 `ebo add --file <path>`。Agent 创建 proposal 后必须停止；真正更新 `.ebo/tree/` 仍由用户执行 `review`、`approve` 和 `apply`。
+如果本次讨论只产生一个 Prompt，也可以使用 `ebo add --file <path> --request "<用户原话>"`。Agent 创建 proposal 后必须停止；真正更新 `.ebo/tree/` 仍由用户执行 `review`、`approve` 和 `apply`。
 
 Agent 应向用户返回类似摘要：
 
 ```text
 Proposal ID: <proposal-id>
 Proposal Hash: <proposal-hash>
+
+用户要求：
+<用户原话>
 
 新增 Prompt：
 - <prompt-id>
@@ -192,15 +225,16 @@ ebo approve <proposal-id>
 ebo apply <proposal-id>
 ```
 
-## 6. 生成新的 Prompt
+## 6. 生成新的 Prompt（创作模式）
 
-输入给 Agent：
+用户明确要求“生成/优化 prompt”时才进入本模式。输入给 Agent：
 
 ```text
 请根据下面的需求生成一个 Ebo Prompt Markdown。
 
 生成前查询现有 Prompt 树，确定唯一 parent，并分析 depends_on、affects、implements、references 和 supersedes 关系；语义链接需要说明 reason。
 把生成文件写到 .ebo/tree 之外，例如 drafts/<name>.md。
+不要把 AI 创作的内容伪装成用户原话；运行 ebo add 时用 --request 记录用户的原始要求，供 review 对照核验产出是否满足要求。
 不要运行 ebo approve 或 ebo apply；除非我明确要求，也不要运行 ebo add。
 
 需求：

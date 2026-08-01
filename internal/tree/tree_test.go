@@ -71,6 +71,58 @@ func TestApplyTaskResultRejectsStalePlanHash(t *testing.T) {
 	}
 }
 
+func TestStats(t *testing.T) {
+	root := t.TempDir()
+	if err := project.EnsureLayout(root); err != nil {
+		t.Fatal(err)
+	}
+	writePrompt(t, root, project.RootID, rootPromptFixture)
+	writePrompt(t, root, "architecture.draft", draftPromptFixture)
+	writePrompt(t, root, "feature.waiting", waitingPromptFixture)
+	writePrompt(t, root, "feature.hello", helloPromptFixture)
+	writePrompt(t, root, "feature.hello.speak", childPromptFixture)
+
+	promptTree, err := LoadProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := promptTree.Stats()
+	if s.Nodes != 5 {
+		t.Fatalf("nodes = %d, want 5", s.Nodes)
+	}
+	if s.MaxDepth != 2 {
+		t.Fatalf("max_depth = %d, want 2", s.MaxDepth)
+	}
+	if s.DepthCount[0] != 1 || s.DepthCount[1] != 3 || s.DepthCount[2] != 1 {
+		t.Fatalf("depth_count = %v, want {0:1, 1:3, 2:1}", s.DepthCount)
+	}
+	if s.Dirty != 4 || s.InSync != 0 {
+		t.Fatalf("dirty/in_sync = %d/%d, want 4/0", s.Dirty, s.InSync)
+	}
+	if s.BodyBytes <= 0 {
+		t.Fatalf("body_bytes = %d, want > 0", s.BodyBytes)
+	}
+
+	// After a passing result, the node moves from dirty to in_sync.
+	hello := promptTree.Nodes["feature.hello"]
+	if err := ApplyTaskResult(root, TaskResultUpdate{
+		PromptID:      "feature.hello",
+		Result:        "passed",
+		ContentHash:   document.ContentHash(hello),
+		EffectiveHash: promptTree.EffectiveHashes()["feature.hello"],
+	}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := LoadProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := updated.Stats()
+	if after.Dirty != 3 || after.InSync != 1 {
+		t.Fatalf("after pass dirty/in_sync = %d/%d, want 3/1", after.Dirty, after.InSync)
+	}
+}
+
 func TestExecutionOrderRequiresApprovalAndReadyDependencies(t *testing.T) {
 	root := t.TempDir()
 	if err := project.EnsureLayout(root); err != nil {
@@ -176,4 +228,21 @@ links:
 ---
 ## Intent
 Wait for the dependency to be approved.
+`
+
+const childPromptFixture = `---
+schema: ebo.prompt/v1
+id: feature.hello.speak
+title: Speak
+kind: task
+parent: feature.hello
+state:
+  spec: approved
+  execution: not_started
+  sync: dirty
+links:
+  references: []
+---
+## Intent
+Nested below feature.hello to exercise depth counting.
 `

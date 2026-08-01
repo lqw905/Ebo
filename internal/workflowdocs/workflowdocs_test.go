@@ -43,6 +43,15 @@ func TestUpdateCreatesChineseWorkflow(t *testing.T) {
 		"Agent 创建 proposal 后必须停止",
 		"人工审阅并加入 Prompt 树",
 		"反向抽象 Prompt 树",
+		"### 5.1 两种创作模式与触发规则",
+		"记录模式（默认）",
+		"创作模式",
+		"默认是记录模式",
+		"校订用户原话",
+		"薄而忠实 > 厚而虚构",
+		"--request",
+		"设计文档是讨论产物，不作为可执行任务进树",
+		"生成新的 Prompt（创作模式）",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("workflow does not contain %q:\n%s", want, text)

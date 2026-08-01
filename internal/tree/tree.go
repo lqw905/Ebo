@@ -228,6 +228,97 @@ func (t *Tree) DirtyNodes() []string {
 	return dirty
 }
 
+// Stats summarizes the shape and health of a prompt tree.
+type Stats struct {
+	Nodes      int
+	MaxDepth   int
+	DepthCount map[int]int
+	InSync     int
+	Dirty      int
+	BodyBytes  int
+}
+
+// Stats reports tree shape (counts, depth histogram, body size) and health
+// (in_sync vs dirty). InSync counts non-root nodes whose satisfied hash still
+// matches their effective hash and whose execution state is not failed/blocked,
+// mirroring DirtyNodes.
+func (t *Tree) Stats() Stats {
+	ids := t.IDs()
+	dirtySet := map[string]bool{}
+	for _, id := range t.DirtyNodes() {
+		dirtySet[id] = true
+	}
+	depths := t.depthsFromRoot()
+
+	st := Stats{
+		Nodes:      len(ids),
+		DepthCount: map[int]int{},
+		Dirty:      len(dirtySet),
+	}
+	for _, id := range ids {
+		node := t.Nodes[id]
+		st.BodyBytes += len(node.Body)
+		d, ok := depths[id]
+		if !ok {
+			d = depthByParent(t, id)
+		}
+		st.DepthCount[d]++
+		if d > st.MaxDepth {
+			st.MaxDepth = d
+		}
+		if id == project.RootID {
+			continue
+		}
+		if !dirtySet[id] {
+			st.InSync++
+		}
+	}
+	return st
+}
+
+func (t *Tree) depthsFromRoot() map[string]int {
+	depths := map[string]int{}
+	if _, ok := t.Nodes[project.RootID]; !ok {
+		return depths
+	}
+	depths[project.RootID] = 0
+	seen := map[string]bool{project.RootID: true}
+	frontier := []string{project.RootID}
+	for len(frontier) > 0 {
+		var next []string
+		for _, id := range frontier {
+			for _, child := range t.Children(id) {
+				if seen[child] {
+					continue
+				}
+				seen[child] = true
+				depths[child] = depths[id] + 1
+				next = append(next, child)
+			}
+		}
+		frontier = next
+	}
+	return depths
+}
+
+func depthByParent(t *Tree, id string) int {
+	d := 0
+	seen := map[string]bool{}
+	cur := id
+	for {
+		node := t.Nodes[cur]
+		if node == nil || node.Parent == "" {
+			return d
+		}
+		if seen[cur] {
+			return d
+		}
+		seen[cur] = true
+		cur = node.Parent
+		d++
+	}
+}
+
 func (t *Tree) ExecutionOrder() []string {
 	allDirty := map[string]bool{}
 	for _, id := range t.DirtyNodes() {

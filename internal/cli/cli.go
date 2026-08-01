@@ -118,11 +118,11 @@ func printHelp(out io.Writer) {
 Usage:
   ebo init [--agents codex,claude]
   ebo mode [strict|silent]
-  ebo add (--stdin | --file <path> | --dir <path>) [--dry-run]
+  ebo add (--stdin | --file <path> | --dir <path>) [--dry-run] [--request "..."]
   ebo review [proposal-id]
   ebo approve <proposal-id>
   ebo apply <proposal-id>
-  ebo tree (list | show <id> | validate | search <text> | graph [--around <id>])
+  ebo tree (list | show <id> | validate | search <text> | graph [--around <id>] | stats [--json])
   ebo status
   ebo scan [node-id]
   ebo plan [node-id]
@@ -406,6 +406,7 @@ func runAdd(args []string, in io.Reader, out, errOut io.Writer) error {
 	file := fs.String("file", "", "read one prompt markdown file")
 	dir := fs.String("dir", "", "read prompt markdown files from directory")
 	dryRun := fs.Bool("dry-run", false, "validate and preview without creating a proposal")
+	request := fs.String("request", "", "user's original requirement this proposal records, shown by review for fidelity checks")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -444,14 +445,14 @@ func runAdd(args []string, in io.Reader, out, errOut io.Writer) error {
 	}
 	var meta *proposal.Meta
 	if *dryRun {
-		meta, err = proposal.Create(root, sources, true)
+		meta, err = proposal.Create(root, sources, *request, true)
 		if err != nil {
 			return err
 		}
 	} else {
 		err = withProjectLock(root, "add", func() error {
 			var createErr error
-			meta, createErr = proposal.Create(root, sources, false)
+			meta, createErr = proposal.Create(root, sources, *request, false)
 			return createErr
 		})
 		if err != nil {
@@ -464,6 +465,9 @@ func runAdd(args []string, in io.Reader, out, errOut io.Writer) error {
 		fmt.Fprintf(out, "created %s\n", meta.ID)
 		fmt.Fprintf(out, "hash    %s\n", meta.ProposalHash)
 		fmt.Fprintf(out, "next    ebo review %s\n", meta.ID)
+	}
+	if meta.Request != "" {
+		fmt.Fprintf(out, "request %q\n", meta.Request)
 	}
 	for _, node := range meta.Nodes {
 		fmt.Fprintf(out, "- %s (%s) parent=%s\n", node.ID, node.Kind, emptyAsDash(node.Parent))
@@ -501,8 +505,17 @@ func runReview(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	prompts, err := proposal.Prompts(root, meta.ID)
+	if err != nil {
+		return err
+	}
+	bodyByID := map[string]string{}
+	for _, p := range prompts {
+		bodyByID[p.ID] = strings.TrimSpace(p.Body)
+	}
 	fmt.Fprintf(out, "proposal: %s\n", meta.ID)
 	fmt.Fprintf(out, "status:   %s\n", meta.Status)
+	fmt.Fprintf(out, "request:  %s\n", emptyAsDash(meta.Request))
 	fmt.Fprintf(out, "hash:     %s\n", meta.ProposalHash)
 	if actualHash != meta.ProposalHash {
 		fmt.Fprintf(out, "warning:  stored content changed; actual hash is %s\n", actualHash)
@@ -517,6 +530,11 @@ func runReview(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "  title: %s\n", node.Title)
 		fmt.Fprintf(out, "  parent: %s\n", emptyAsDash(node.Parent))
 		fmt.Fprintf(out, "  content: %s\n", node.ContentHash)
+		if body := bodyByID[node.ID]; body != "" {
+			for _, line := range strings.Split(body, "\n") {
+				fmt.Fprintf(out, "  body:   %s\n", line)
+			}
+		}
 	}
 	if meta.Status == "approved" {
 		fmt.Fprintf(out, "\napproved hash: %s\n", meta.ApprovedHash)
@@ -636,6 +654,7 @@ func runApply(args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "applied %s\n", meta.ID)
+	fmt.Fprintf(out, "proposal removed: %s\n", meta.ID)
 	return nil
 }
 
@@ -709,7 +728,7 @@ func runStatus(args []string, out io.Writer) error {
 
 func runTree(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: ebo tree <list|show|validate|search|graph>")
+		return fmt.Errorf("usage: ebo tree <list|show|validate|search|graph|stats>")
 	}
 	root, err := requireRoot()
 	if err != nil {
@@ -744,9 +763,108 @@ func runTree(args []string, out io.Writer) error {
 		return treeSearch(t, args[1], out)
 	case "graph":
 		return treeGraph(t, args[1:], out)
+	case "stats":
+		return runTreeStats(args[1:], t, out)
 	default:
 		return fmt.Errorf("unknown tree command %q", args[0])
 	}
+}
+
+func runTreeStats(args []string, t *tree.Tree, out io.Writer) error {
+	asJSON := false
+	for _, a := range args {
+		switch a {
+		case "--json":
+			asJSON = true
+		default:
+			return fmt.Errorf("usage: ebo tree stats [--json]")
+		}
+	}
+	s := t.Stats()
+	maxB, meanB, medianB := contextSizeEstimate(t)
+	if asJSON {
+		data, err := json.MarshalIndent(map[string]any{
+			"nodes":                 s.Nodes,
+			"max_depth":             s.MaxDepth,
+			"depth_count":           s.DepthCount,
+			"in_sync":               s.InSync,
+			"dirty":                 s.Dirty,
+			"body_bytes":            s.BodyBytes,
+			"context_depth0_max":    maxB,
+			"context_depth0_mean":   meanB,
+			"context_depth0_median": medianB,
+		}, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = out.Write(append(data, '\n'))
+		return err
+	}
+	fmt.Fprintf(out, "nodes:           %d\n", s.Nodes)
+	fmt.Fprintf(out, "max_depth:       %d\n", s.MaxDepth)
+	fmt.Fprintf(out, "depth_histogram: %s\n", formatDepthHistogram(s.DepthCount))
+	syncTotal := s.InSync + s.Dirty
+	ratio := 0
+	if syncTotal > 0 {
+		ratio = s.InSync * 100 / syncTotal
+	}
+	fmt.Fprintf(out, "in_sync:         %d (%d%%)\n", s.InSync, ratio)
+	fmt.Fprintf(out, "dirty:           %d\n", s.Dirty)
+	fmt.Fprintf(out, "body_bytes:      %d total, %d avg\n", s.BodyBytes, avgDiv(s.BodyBytes, s.Nodes))
+	fmt.Fprintf(out, "context_depth0:  max %d B, mean %d B, median %d B\n", maxB, meanB, medianB)
+	return nil
+}
+
+func formatDepthHistogram(counts map[int]int) string {
+	depths := make([]int, 0, len(counts))
+	for d := range counts {
+		depths = append(depths, d)
+	}
+	sort.Ints(depths)
+	var b strings.Builder
+	for i, d := range depths {
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		fmt.Fprintf(&b, "%d:%d", d, counts[d])
+	}
+	if b.Len() == 0 {
+		return "empty"
+	}
+	return b.String()
+}
+
+func avgDiv(sum, n int) int {
+	if n == 0 {
+		return 0
+	}
+	return sum / n
+}
+
+// contextSizeEstimate measures the serialized size of a single
+// `ebo context <id> --depth 0` load for every node, so agents and users can
+// tell how much context loading any one prompt actually costs.
+func contextSizeEstimate(t *tree.Tree) (maxB, meanB, medianB int) {
+	sizes := make([]int, 0, len(t.Nodes))
+	for _, id := range t.IDs() {
+		data, err := json.Marshal(buildContextPayload(t, id, 0))
+		if err != nil {
+			continue
+		}
+		sizes = append(sizes, len(data))
+	}
+	if len(sizes) == 0 {
+		return 0, 0, 0
+	}
+	sort.Ints(sizes)
+	maxB = sizes[len(sizes)-1]
+	medianB = sizes[len(sizes)/2]
+	total := 0
+	for _, n := range sizes {
+		total += n
+	}
+	meanB = total / len(sizes)
+	return maxB, meanB, medianB
 }
 
 func treeList(t *tree.Tree, out io.Writer) error {

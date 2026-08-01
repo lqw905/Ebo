@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -444,10 +445,17 @@ func TestModeSwitchAndSilentApprove(t *testing.T) {
 	if !strings.Contains(approveOut, "mode: silent (auto-approve)") || !strings.Contains(approveOut, "approved") {
 		t.Fatalf("silent approve output = %s", approveOut)
 	}
-	runCLI(t, nil, "apply", proposalID)
+	applyOut := runCLI(t, nil, "apply", proposalID)
+	if !strings.Contains(applyOut, "proposal removed") {
+		t.Fatalf("apply output must report proposal removal:\n%s", applyOut)
+	}
 	treeOut := runCLI(t, nil, "tree", "list")
 	if !strings.Contains(treeOut, "feature.vibe") {
 		t.Fatalf("applied node missing from tree:\n%s", treeOut)
+	}
+	reviewOut := runCLI(t, nil, "review")
+	if strings.Contains(reviewOut, proposalID) {
+		t.Fatalf("applied proposal must not be listed by review:\n%s", reviewOut)
 	}
 
 	// Switch back to strict restores the strict docs.
@@ -693,3 +701,83 @@ links:
 ## Intent
 Vibe-coded feature.
 `
+
+func TestTreeStatsReportsShapeAndContextSize(t *testing.T) {
+	root := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+
+	runCLI(t, nil, "init", "--agents", "none")
+	writePrompt(t, root, project.RootID, rootPrompt)
+	writePrompt(t, root, "feature.login", loginPrompt)
+
+	output := runCLI(t, nil, "tree", "stats")
+	for _, want := range []string{
+		"nodes:           2",
+		"max_depth:       1",
+		"depth_histogram: 0:1  1:1",
+		"in_sync:         0 (0%)",
+		"dirty:           1",
+		"context_depth0:  max ",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("tree stats missing %q:\n%s", want, output)
+		}
+	}
+
+	jsonOutput := runCLI(t, nil, "tree", "stats", "--json")
+	var stats map[string]any
+	if err := json.Unmarshal([]byte(jsonOutput), &stats); err != nil {
+		t.Fatalf("tree stats --json is not valid JSON:\n%s", jsonOutput)
+	}
+	for _, key := range []string{"nodes", "max_depth", "depth_count", "in_sync", "dirty", "body_bytes", "context_depth0_max", "context_depth0_mean", "context_depth0_median"} {
+		if _, ok := stats[key]; !ok {
+			t.Fatalf("tree stats --json missing key %q:\n%s", key, jsonOutput)
+		}
+	}
+	if stats["nodes"].(float64) != 2 {
+		t.Fatalf("json nodes = %v, want 2", stats["nodes"])
+	}
+}
+
+func TestAddAndReviewShowUserRequest(t *testing.T) {
+	root := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalWD) })
+
+	runCLI(t, nil, "init", "--agents", "none")
+	draft := filepath.Join(root, "drafts", "vibe.md")
+	if err := os.MkdirAll(filepath.Dir(draft), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(draft, []byte(vibePrompt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addOut := runCLI(t, nil, "add", "--file", "drafts/vibe.md", "--request", "实现登录")
+	if !strings.Contains(addOut, `request "实现登录"`) {
+		t.Fatalf("add output must echo the request:\n%s", addOut)
+	}
+	match := regexp.MustCompile(`created (proposal-[^\s]+)`).FindStringSubmatch(addOut)
+	if len(match) != 2 {
+		t.Fatalf("could not parse proposal id:\n%s", addOut)
+	}
+	reviewOut := runCLI(t, nil, "review", match[1])
+	if !strings.Contains(reviewOut, "request:  实现登录") {
+		t.Fatalf("review must show the user request for comparison:\n%s", reviewOut)
+	}
+	if !strings.Contains(reviewOut, "body:   Vibe-coded feature.") {
+		t.Fatalf("review must show the prompt body next to the request:\n%s", reviewOut)
+	}
+}

@@ -27,7 +27,7 @@ func TestProposalApproveApplyLifecycle(t *testing.T) {
 		Path: "drafts/hello.md",
 		Name: "hello.md",
 		Data: []byte(helloPromptFixture),
-	}}, false)
+	}}, "实现登录", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +68,51 @@ func TestProposalApproveApplyLifecycle(t *testing.T) {
 	if _, err := os.Stat(target); err != nil {
 		t.Fatalf("expected applied prompt at %s: %v", target, err)
 	}
+	proposalDir := filepath.Join(project.NewPaths(root).ProposalsDir, meta.ID)
+	if _, err := os.Stat(proposalDir); !os.IsNotExist(err) {
+		t.Fatalf("proposal directory must be removed after apply: %v", err)
+	}
+}
+
+func TestProposalBindsUserRequest(t *testing.T) {
+	root := t.TempDir()
+	if err := project.EnsureLayout(root); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := Create(root, []Source{{
+		Kind: "file",
+		Path: "drafts/hello.md",
+		Name: "hello.md",
+		Data: []byte(helloPromptFixture),
+	}}, "实现登录", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Request != "实现登录" {
+		t.Fatalf("request = %q, want 实现登录", meta.Request)
+	}
+	loaded, err := Load(root, meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Request != "实现登录" {
+		t.Fatalf("stored request = %q", loaded.Request)
+	}
+	// Tampering with the stored request must invalidate the proposal hash.
+	loaded.Request = "改成别的要求"
+	if err := Save(root, loaded); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := RecomputeHash(root, loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual == loaded.ProposalHash {
+		t.Fatal("changed request must change the proposal hash")
+	}
+	if _, err := Approve(root, meta.ID); err == nil {
+		t.Fatal("expected approve to reject a tampered request")
+	}
 }
 
 func TestApproveRejectsChangedProposalContent(t *testing.T) {
@@ -80,7 +125,7 @@ func TestApproveRejectsChangedProposalContent(t *testing.T) {
 		Path: "drafts/hello.md",
 		Name: "hello.md",
 		Data: []byte(helloPromptFixture),
-	}}, false)
+	}}, "实现登录", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +148,7 @@ func TestApplyRejectsContentChangedAfterApproval(t *testing.T) {
 		Path: "drafts/hello.md",
 		Name: "hello.md",
 		Data: []byte(helloPromptFixture),
-	}}, false)
+	}}, "实现登录", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,6 +161,9 @@ func TestApplyRejectsContentChangedAfterApproval(t *testing.T) {
 	}
 	if _, err := Apply(root, meta.ID); err == nil {
 		t.Fatal("expected changed approved content to be rejected during apply")
+	}
+	if _, err := os.Stat(filepath.Join(project.NewPaths(root).ProposalsDir, meta.ID)); err != nil {
+		t.Fatalf("failed apply must leave the proposal in place: %v", err)
 	}
 }
 

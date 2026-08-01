@@ -34,6 +34,9 @@ func TestUpdateCreatesExecutionProtocol(t *testing.T) {
 		"只能生成 Prompt 草稿、运行 ebo add 创建 proposal",
 		"不得遍历整个 .ebo/tree/",
 		"Agent 不得执行",
+		"默认只校订用户原话",
+		"创作发挥",
+		"--request",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("managed block does not contain %q:\n%s", want, text)
@@ -52,6 +55,8 @@ func TestSilentBlockDirectsAgentToSelfApprove(t *testing.T) {
 		"静默模式不强制提交",
 		"只发生在 report 完成后、门禁关闭时",
 		"git add -A 与 git commit",
+		"默认只校订用户原话",
+		"创作发挥",
 	} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("silent block does not contain %q:\n%s", want, block)

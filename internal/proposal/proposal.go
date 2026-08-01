@@ -30,6 +30,7 @@ type Meta struct {
 	CreatedAt    string       `json:"created_at"`
 	UpdatedAt    string       `json:"updated_at"`
 	ProposalHash string       `json:"proposal_hash"`
+	Request      string       `json:"request,omitempty"`
 	Sources      []SourceMeta `json:"sources"`
 	Nodes        []NodeMeta   `json:"nodes"`
 	ApprovedAt   string       `json:"approved_at,omitempty"`
@@ -54,8 +55,11 @@ type NodeMeta struct {
 	ContentHash string `json:"content_hash"`
 }
 
-func Create(root string, sources []Source, dryRun bool) (*Meta, error) {
-	meta, _, err := buildMeta(sources, time.Now().UTC())
+// request is the user's original requirement this proposal records. It is
+// stored and hash-bound so a reviewer can compare it against the prompt body
+// to verify the agent transcribed or satisfied the ask without adding content.
+func Create(root string, sources []Source, request string, dryRun bool) (*Meta, error) {
+	meta, _, err := buildMeta(sources, request, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -235,6 +239,12 @@ func Apply(root, id string) (*Meta, error) {
 	if err := Save(root, meta); err != nil {
 		return nil, err
 	}
+	// The prompt now lives in the formal tree. The proposal was only the
+	// human-approval staging record; the tree node is the source of truth
+	// going forward, so the proposal is removed. Deletion is best-effort:
+	// the tree swap already succeeded, and a leftover proposal is only a
+	// harmless record already marked "applied".
+	_ = os.RemoveAll(filepath.Join(paths.ProposalsDir, id))
 	_ = os.RemoveAll(applyRoot)
 	return meta, nil
 }
@@ -249,7 +259,7 @@ func approvedPromptData(prompt *document.Prompt) []byte {
 	return document.RenderPrompt(prompt)
 }
 
-func buildMeta(sources []Source, now time.Time) (*Meta, []*document.Prompt, error) {
+func buildMeta(sources []Source, request string, now time.Time) (*Meta, []*document.Prompt, error) {
 	if len(sources) == 0 {
 		return nil, nil, fmt.Errorf("no prompt sources provided")
 	}
@@ -291,7 +301,7 @@ func buildMeta(sources []Source, now time.Time) (*Meta, []*document.Prompt, erro
 		}
 	}
 
-	hash := proposalHash(sourceMeta, nodeMeta)
+	hash := proposalHash(request, sourceMeta, nodeMeta)
 	id := fmt.Sprintf("proposal-%s-%s", now.Format("20060102-150405"), document.ShortHash(hash, 8))
 	meta := &Meta{
 		Schema:       Schema,
@@ -300,6 +310,7 @@ func buildMeta(sources []Source, now time.Time) (*Meta, []*document.Prompt, erro
 		CreatedAt:    now.Format(time.RFC3339),
 		UpdatedAt:    now.Format(time.RFC3339),
 		ProposalHash: hash,
+		Request:      request,
 		Sources:      sourceMeta,
 		Nodes:        nodeMeta,
 	}
@@ -327,7 +338,7 @@ func rebuildFromStored(root string, meta *Meta) (*Meta, []*document.Prompt, [][]
 			Data: bytes,
 		})
 	}
-	actual, prompts, err := buildMeta(sources, parseTimeOrNow(meta.CreatedAt))
+	actual, prompts, err := buildMeta(sources, meta.Request, parseTimeOrNow(meta.CreatedAt))
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -335,7 +346,18 @@ func rebuildFromStored(root string, meta *Meta) (*Meta, []*document.Prompt, [][]
 	return actual, prompts, data, nil
 }
 
-func proposalHash(sources []SourceMeta, nodes []NodeMeta) string {
+// Prompts returns the parsed prompts of a proposal, rebuilt from stored
+// sources. Used by review to show bodies next to the recorded request.
+func Prompts(root, id string) ([]*document.Prompt, error) {
+	meta, err := Load(root, id)
+	if err != nil {
+		return nil, err
+	}
+	_, prompts, _, err := rebuildFromStored(root, meta)
+	return prompts, err
+}
+
+func proposalHash(request string, sources []SourceMeta, nodes []NodeMeta) string {
 	type hashSource struct {
 		Kind        string `json:"kind"`
 		Path        string `json:"path"`
@@ -345,8 +367,9 @@ func proposalHash(sources []SourceMeta, nodes []NodeMeta) string {
 	}
 	payload := struct {
 		Schema  string       `json:"schema"`
+		Request string       `json:"request,omitempty"`
 		Sources []hashSource `json:"sources"`
-	}{Schema: Schema}
+	}{Schema: Schema, Request: request}
 	for i, source := range sources {
 		payload.Sources = append(payload.Sources, hashSource{
 			Kind:        source.Kind,

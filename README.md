@@ -55,10 +55,10 @@ ebo status
 ebo config get
 ebo mode [strict|silent]
 
-ebo add --stdin
-ebo add --file <path>
-ebo add --dir <path>
-ebo add --dry-run --file <path>
+ebo add --stdin [--request "..."]
+ebo add --file <path> [--request "..."]
+ebo add --dir <path> [--request "..."]
+ebo add --dry-run --file <path> [--request "..."]
 ebo review [proposal-id]
 ebo approve <proposal-id>
 ebo reject <proposal-id> --reason "..."
@@ -70,6 +70,7 @@ ebo tree validate
 ebo tree search "<text>"
 ebo tree graph [node-id]
 ebo tree graph --around <node-id>
+ebo tree stats [--json]
 ebo context <node-id> --depth 2 --out .ebo/runtime/context.json
 
 ebo scan [node-id]
@@ -96,7 +97,9 @@ ebo hooks install codex
 ebo hooks status codex
 ```
 
-`approve` 有意要求交互终端和 `[y/N]` 确认。Ebo 在内部绑定完整 Proposal 哈希，并在 `apply` 时再次校验，因此用户无需抄写 SHA-256 值，而内容一旦变化仍会被拒绝。
+`approve` 有意要求交互终端和 `[y/N]` 确认。Ebo 在内部绑定完整 Proposal 哈希，并在 `apply` 时再次校验，因此用户无需抄写 SHA-256 值，而内容一旦变化仍会被拒绝。Proposal 一旦 `apply` 进入正式树即被移除——它只是审批环节的暂存记录，树节点此后成为唯一事实来源；`ebo review` 只列出尚未走完流程的 Proposal。
+
+Prompt 起草遵循两种创作模式。**记录模式（默认）**：用户直接报需求点时，Agent 只校订用户原话（错别字、语序、不通顺），不增删语义；**创作模式**：用户明确要求“生成/优化 prompt 或设计文档”时，Agent 才允许发挥，且产出视为 AI 创作。每次 `ebo add` 都可用 `--request "<用户原话>"` 记录用户要求，它被哈希绑定；`ebo review` 会并排显示“用户要求 vs Prompt 正文”，让人一眼核验 Agent 有没有加料或跑题。设计文档是讨论产物，不作为可执行任务进树——从它蒸馏出决策性 Prompt 后再走 `add → approve → apply`。
 
 ## 治理模式
 
