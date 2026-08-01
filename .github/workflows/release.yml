@@ -28,7 +28,8 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-          npm-auth-token: ${{ secrets.NODE_AUTH_TOKEN }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
       - name: Test
         run: go test ./...
@@ -63,6 +64,8 @@ jobs:
 
       - name: Publish platform npm packages
         shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           npm publish ./npm/platforms/win32-x64 --access public --provenance
@@ -77,6 +80,8 @@ jobs:
           npm view "@aibo666/ebo-darwin-arm64@${version}" version
 
       - name: Publish root npm package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         run: npm publish ./npm/root --access public --provenance
 
       - name: Create GitHub Release
